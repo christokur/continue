@@ -10,6 +10,7 @@ import {
 import { DEFAULT_MAX_TOKENS } from "../constants.js";
 import { BaseLLM } from "../index.js";
 import Anthropic from "./Anthropic.js";
+import Azure from "./Azure.js";
 import Bedrock from "./Bedrock.js";
 import Cloudflare from "./Cloudflare.js";
 import Cohere from "./Cohere.js";
@@ -32,6 +33,7 @@ import OpenAI from "./OpenAI.js";
 import Replicate from "./Replicate.js";
 import TextGenWebUI from "./TextGenWebUI.js";
 import Together from "./Together.js";
+import WatsonX from "./WatsonX.js";
 import ContinueProxy from "./stubs/ContinueProxy.js";
 
 function convertToLetter(num: number): string {
@@ -124,6 +126,8 @@ const LLMs = [
   Cloudflare,
   Deepseek,
   Msty,
+  Azure,
+  WatsonX,
 ];
 
 export async function llmFromDescription(

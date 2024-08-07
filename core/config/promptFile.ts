@@ -3,9 +3,9 @@ import path from "path";
 import * as YAML from "yaml";
 import type { IDE, SlashCommand } from "..";
 import { walkDir } from "../indexing/walkDir";
-import { stripImages } from "../llm/countTokens.js";
-import { renderTemplatedString } from "../llm/llms/index.js";
-import { getBasename } from "../util/index.js";
+import { stripImages } from "../llm/images";
+import { renderTemplatedString } from "../llm/llms/index";
+import { getBasename } from "../util/index";
 
 export const DEFAULT_PROMPTS_FOLDER = ".prompts";
 
@@ -133,6 +133,7 @@ export function slashCommandFromPromptFile(
             provider.description.title,
             async (context: any) => {
               const items = await provider.getContextItems(context, {
+                config,
                 embeddingsProvider: config.embeddingsProvider,
                 fetch,
                 fullInput: userInput,
