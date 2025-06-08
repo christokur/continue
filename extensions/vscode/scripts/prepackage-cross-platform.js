@@ -24,6 +24,8 @@ const {
   copySqliteBinary,
   installNodeModuleInTempDirAndCopyToCurrent,
   downloadSqliteBinary,
+  copyTokenizers,
+  copyScripts,
 } = require("./utils");
 
 // Clear folders that will be packaged to ensure clean slate
@@ -84,7 +86,7 @@ function isWin() {
 async function package(target, os, arch, exe) {
   console.log("[info] Packaging extension for target ", target);
 
-  // Copy config_schema.json to config.json in docs and intellij
+  // Copy config_schema to intellij
   copyConfigSchema();
 
   // Install node_modules
@@ -103,6 +105,12 @@ async function package(target, os, arch, exe) {
   // Install and copy over native modules
   // *** onnxruntime-node ***
   await copyOnnxRuntimeFromNodeModules(target);
+
+  // copy llama tokenizers to out
+  copyTokenizers();
+
+  // Copy Linux scripts
+  await copyScripts();
 
   // *** Install @lancedb binary ***
   const lancePackageToInstall = {
@@ -156,14 +164,13 @@ async function package(target, os, arch, exe) {
           ? "libonnxruntime.so.1.14.0"
           : "onnxruntime.dll"
     }`,
-    "builtin-themes/dark_modern.json",
 
     // Code/styling for the sidebar
     "gui/assets/index.js",
     "gui/assets/index.css",
 
     // Tutorial
-    "media/welcome.md",
+    "media/move-chat-panel-right.md",
     "continue_tutorial.py",
     "config_schema.json",
 
@@ -202,10 +209,9 @@ async function package(target, os, arch, exe) {
         : `${target}${os === "linux" ? "-gnu" : ""}`
     }/index.node`,
     `out/node_modules/esbuild/lib/main.js`,
-    `out/node_modules/esbuild/bin/esbuild`,
   ]);
 }
 
-(async () => {
+void (async () => {
   await package(target, os, arch, exe);
 })();

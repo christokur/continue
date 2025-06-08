@@ -17,14 +17,15 @@ class DiffContextProvider extends BaseContextProvider {
     query: string,
     extras: ContextProviderExtras,
   ): Promise<ContextItem[]> {
-    const diff = await extras.ide.getDiff();
+    const includeUnstaged = this.options?.includeUnstaged ?? true;
+    const diffs = await extras.ide.getDiff(includeUnstaged); // TODO use diff cache (currently cache always includes unstaged)
     return [
       {
         description: "The current git diff",
         content:
-          diff.trim() === ""
+          diffs.length === 0
             ? "Git shows no current changes."
-            : `\`\`\`git diff\n${diff}\n\`\`\``,
+            : `\`\`\`git diff\n${diffs.join("\n")}\n\`\`\``,
         name: "Git Diff",
       },
     ];

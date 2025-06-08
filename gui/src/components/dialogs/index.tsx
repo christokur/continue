@@ -1,21 +1,29 @@
+import { XMarkIcon } from "@heroicons/react/24/outline";
 import React, { isValidElement, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import styled from "styled-components";
 import {
-  VSC_BACKGROUND_VAR,
+  CloseButton,
   defaultBorderRadius,
-  lightGray,
-  parseColorForHex,
   vscBackground,
   vscForeground,
 } from "..";
+import { varWithFallback } from "../../styles/theme";
+
+interface TextDialogProps {
+  showDialog: boolean;
+  onEnter: () => void;
+  onClose: () => void;
+  message?: string | JSX.Element;
+}
 
 const ScreenCover = styled.div`
   position: fixed;
   width: 100%;
   height: 100%;
-  background-color: ${parseColorForHex(VSC_BACKGROUND_VAR)}aa;
-  z-index: 1000;
+  background-color: ${varWithFallback("background")}aa;
+  z-index: 100000;
+  flex-direction: column;
 `;
 
 const DialogContainer = styled.div`
@@ -23,27 +31,16 @@ const DialogContainer = styled.div`
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 75%;
-`;
-
-const Dialog = styled.div`
   color: ${vscForeground};
   background-color: ${vscBackground};
   border-radius: ${defaultBorderRadius};
   display: flex;
   flex-direction: column;
-  border: 1px solid ${lightGray};
-  margin: auto;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
   word-wrap: break-word;
-  // overflow: hidden;
 `;
 
-const TextDialog = (props: {
-  showDialog: boolean;
-  onEnter: () => void;
-  onClose: () => void;
-  message?: string | JSX.Element;
-}) => {
+const TextDialog = (props: TextDialogProps) => {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -62,24 +59,22 @@ const TextDialog = (props: {
   }
 
   return (
-    <ScreenCover
-      onClick={() => {
-        props.onClose();
-      }}
-      hidden={!props.showDialog}
-    >
+    <ScreenCover onClick={props.onClose} hidden={!props.showDialog}>
       <DialogContainer
+        className="xs:w-[90%] no-scrollbar max-h-[95%] w-[92%] max-w-[600px] overflow-auto sm:w-[88%] md:w-[80%]"
         onClick={(e) => {
           e.stopPropagation();
         }}
       >
-        <Dialog>
-          {typeof props.message === "string" ? (
-            <ReactMarkdown>{props.message || ""}</ReactMarkdown>
-          ) : !React.isValidElement(props.message) ? null : (
-            props.message
-          )}
-        </Dialog>
+        <CloseButton onClick={props.onClose}>
+          <XMarkIcon className="z-50 h-5 w-5 hover:brightness-125" />
+        </CloseButton>
+
+        {typeof props.message === "string" ? (
+          <ReactMarkdown>{props.message || ""}</ReactMarkdown>
+        ) : !React.isValidElement(props.message) ? null : (
+          props.message
+        )}
       </DialogContainer>
     </ScreenCover>
   );

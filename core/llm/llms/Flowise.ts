@@ -1,11 +1,7 @@
 import socketIOClient, { Socket } from "socket.io-client";
-import {
-  ChatMessage,
-  CompletionOptions,
-  LLMOptions,
-  ModelProvider,
-} from "../../index.js";
-import { stripImages } from "../images.js";
+
+import { ChatMessage, CompletionOptions, LLMOptions } from "../../index.js";
+import { renderChatMessage } from "../../util/messageContent.js";
 import { BaseLLM } from "../index.js";
 
 interface IFlowiseApiOptions {
@@ -57,7 +53,7 @@ interface IFlowiseProviderLLMOptions extends LLMOptions {
 }
 
 class Flowise extends BaseLLM {
-  static providerName: ModelProvider = "flowise";
+  static providerName = "flowise";
   static defaultOptions: Partial<IFlowiseProviderLLMOptions> = {
     apiBase: "http://localhost:3000",
   };
@@ -120,25 +116,32 @@ class Flowise extends BaseLLM {
 
   protected async *_streamComplete(
     prompt: string,
+    signal: AbortSignal,
     options: CompletionOptions,
   ): AsyncGenerator<string> {
     const message: ChatMessage = { role: "user", content: prompt };
-    for await (const chunk of this._streamChat([message], options)) {
-      yield stripImages(chunk.content);
+    for await (const chunk of this._streamChat([message], signal, options)) {
+      yield renderChatMessage(chunk);
     }
   }
 
   protected async *_streamChat(
     messages: ChatMessage[],
+    signal: AbortSignal,
     options: CompletionOptions,
   ): AsyncGenerator<ChatMessage> {
     const requestBody = this._getRequestBody(messages, options);
     const { socket, socketInfo } = await this._initializeSocket();
-    const request = this.fetch(this._getChatUrl(), {
+    const response = await this.fetch(this._getChatUrl(), {
       method: "POST",
       headers: this._getHeaders(),
       body: JSON.stringify({ ...requestBody, socketIOClientId: socket.id }),
-    }).then((res) => res.json());
+      signal,
+    });
+
+    if (response.status === 499) {
+      return; // Aborted by user
+    }
 
     while (await socketInfo.hasNextToken()) {
       yield { role: "assistant", content: socketInfo.getCurrentMessage() };
@@ -146,7 +149,7 @@ class Flowise extends BaseLLM {
     if (socketInfo.error) {
       socket.disconnect();
       try {
-        yield { role: "assistant", content: (await request).text };
+        yield { role: "assistant", content: await response.text() };
       } catch (error: any) {
         yield { role: "assistant", content: (error as Error).message ?? error };
       }

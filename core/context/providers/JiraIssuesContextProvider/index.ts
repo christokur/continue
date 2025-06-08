@@ -6,6 +6,7 @@ import {
   LoadSubmenuItemsArgs,
 } from "../../../index.js";
 import { BaseContextProvider } from "../../index.js";
+
 import { JiraClient } from "./JiraClient.js";
 
 class JiraIssuesContextProvider extends BaseContextProvider {
@@ -24,6 +25,7 @@ class JiraIssuesContextProvider extends BaseContextProvider {
       issueQuery: this.options.issueQuery,
       apiVersion: this.options.apiVersion,
       requestOptions: this.options.requestOptions,
+      maxResults: this.options.maxResults,
     });
   }
 
@@ -31,8 +33,6 @@ class JiraIssuesContextProvider extends BaseContextProvider {
     query: string,
     extras: ContextProviderExtras,
   ): Promise<ContextItem[]> {
-    const issueId = query;
-
     const api = this.getApi();
     const issue = await api.issue(query, extras.fetch);
 

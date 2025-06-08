@@ -1,13 +1,15 @@
-import { getContinueRcPath, getTsConfigPath, migrate } from "core/util/paths";
+import * as path from "path";
+
+import { getContinueRcPath, getTsConfigPath } from "core/util/paths";
 import { Telemetry } from "core/util/posthog";
-import path from "node:path";
 import * as vscode from "vscode";
+
 import { VsCodeExtension } from "../extension/VsCodeExtension";
 import registerQuickFixProvider from "../lang-server/codeActions";
 import { getExtensionVersion } from "../util/util";
-import { getExtensionUri } from "../util/vscode";
+
 import { VsCodeContinueApi } from "./api";
-import { setupInlineTips } from "./inlineTips";
+import setupInlineTips from "./InlineTipManager";
 
 export async function activateExtension(context: vscode.ExtensionContext) {
   // Add necessary files
@@ -20,17 +22,6 @@ export async function activateExtension(context: vscode.ExtensionContext) {
 
   const vscodeExtension = new VsCodeExtension(context);
 
-  migrate("showWelcome_1", () => {
-    vscode.commands.executeCommand(
-      "markdown.showPreview",
-      vscode.Uri.file(
-        path.join(getExtensionUri().fsPath, "media", "welcome.md"),
-      ),
-    );
-
-    vscode.commands.executeCommand("continue.focusContinueInput");
-  });
-
   // Load Continue configuration
   if (!context.globalState.get("hasBeenInstalled")) {
     context.globalState.update("hasBeenInstalled", true);
@@ -40,6 +31,34 @@ export async function activateExtension(context: vscode.ExtensionContext) {
         extensionVersion: getExtensionVersion(),
       },
       true,
+    );
+  }
+
+  // Register config.yaml schema by removing old entries and adding new one (uri.fsPath changes with each version)
+  const yamlMatcher = ".continue/**/*.yaml";
+  const yamlConfig = vscode.workspace.getConfiguration("yaml");
+
+  const existingSchemas = yamlConfig.get("schemas") || {};
+  const newSchemas = Object.entries(existingSchemas).filter(
+    ([_, value]) => Array.isArray(value) && value.includes(yamlMatcher), // remove old ones
+  );
+
+  const newPath = path.join(
+    context.extension.extensionUri.fsPath,
+    "config-yaml-schema.json",
+  );
+  newSchemas.push([newPath, [yamlMatcher]]);
+
+  try {
+    await yamlConfig.update(
+      "schemas",
+      Object.fromEntries(newSchemas),
+      vscode.ConfigurationTarget.Global,
+    );
+  } catch (error) {
+    console.error(
+      "Failed to register Continue config.yaml schema, most likely, YAML extension is not installed",
+      error,
     );
   }
 

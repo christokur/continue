@@ -1,5 +1,5 @@
 import { ChatMessage } from "../../index.js";
-import { stripImages } from "../images.js";
+import { renderChatMessage } from "../../util/messageContent.js";
 
 function templateFactory(
   systemMessage: (msg: ChatMessage) => string,
@@ -64,7 +64,7 @@ function llama2TemplateMessages(msgs: ChatMessage[]): string {
   let prompt = "";
   let hasSystem = msgs[0].role === "system";
 
-  if (hasSystem && stripImages(msgs[0].content).trim() === "") {
+  if (hasSystem && renderChatMessage(msgs[0]).trim() === "") {
     hasSystem = false;
     msgs = msgs.slice(1);
   }
@@ -91,6 +91,15 @@ function llama2TemplateMessages(msgs: ChatMessage[]): string {
   }
 
   return prompt;
+}
+
+// Llama2 template with added \n to prevent Codestral from continuing user message
+function codestralTemplateMessages(msgs: ChatMessage[]): string {
+  let template = llama2TemplateMessages(msgs);
+  if (template.length === 0) {
+    return template;
+  }
+  return template + "\n";
 }
 
 function anthropicTemplateMessages(messages: ChatMessage[]): string {
@@ -156,9 +165,9 @@ function deepseekTemplateMessages(msgs: ChatMessage[]): string {
   let prompt = "";
   let system: string | null = null;
   prompt +=
-    "You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.\n";
+    "You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and your  role is to assist with questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will not answer.\n";
   if (msgs[0].role === "system") {
-    system = stripImages(msgs.shift()!.content);
+    system = renderChatMessage(msgs.shift()!);
   }
 
   for (let i = 0; i < msgs.length; i++) {
@@ -245,7 +254,7 @@ function codeLlama70bTemplateMessages(msgs: ChatMessage[]): string {
   let prompt = "<s>";
 
   for (const msg of msgs) {
-    prompt += `Source: ${msg.role}\n\n ${stripImages(msg.content).trim()}`;
+    prompt += `Source: ${msg.role}\n\n ${renderChatMessage(msg).trim()}`;
     prompt += " <step> ";
   }
 
@@ -274,12 +283,22 @@ const gemmaTemplateMessage = templateFactory(
   "<end_of_turn>\n",
 );
 
+const graniteTemplateMessages = templateFactory(
+  (msg) => (!!msg ? `\n\nSystem:\n ${msg.content}\n\n` : ""),
+  "Question:\n",
+  "Answer:\n",
+  "\n\n",
+  "",
+  "",
+);
+
 export {
   anthropicTemplateMessages,
   chatmlTemplateMessages,
   codeLlama70bTemplateMessages,
   deepseekTemplateMessages,
   gemmaTemplateMessage,
+  graniteTemplateMessages,
   llama2TemplateMessages,
   llama3TemplateMessages,
   llavaTemplateMessages,
@@ -290,4 +309,5 @@ export {
   templateAlpacaMessages,
   xWinCoderTemplateMessages,
   zephyrTemplateMessages,
+  codestralTemplateMessages,
 };

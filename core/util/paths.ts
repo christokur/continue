@@ -1,15 +1,59 @@
-import * as JSONC from "comment-json";
-import dotenv from "dotenv";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { defaultConfig, defaultConfigJetBrains } from "../config/default.js";
-import Types from "../config/types.js";
-import { IdeType, SerializedContinueConfig } from "../index.js";
+import * as YAML from "yaml";
+
+import { ConfigYaml, DevEventName } from "@continuedev/config-yaml";
+import * as JSONC from "comment-json";
+import dotenv from "dotenv";
+
+import { IdeType, SerializedContinueConfig } from "../";
+import { defaultConfig, defaultConfigJetBrains } from "../config/default";
+import Types from "../config/types";
 
 dotenv.config();
-const CONTINUE_GLOBAL_DIR =
-  process.env.CONTINUE_GLOBAL_DIR ?? path.join(os.homedir(), ".continue");
+
+const CONTINUE_GLOBAL_DIR = (() => {
+  const configPath = process.env.CONTINUE_GLOBAL_DIR;
+  if (configPath) {
+    // Convert relative path to absolute paths based on current working directory
+    return path.isAbsolute(configPath)
+      ? configPath
+      : path.resolve(process.cwd(), configPath);
+  }
+  return path.join(os.homedir(), ".continue");
+})();
+
+// export const DEFAULT_CONFIG_TS_CONTENTS = `import { Config } from "./types"\n\nexport function modifyConfig(config: Config): Config {
+//   return config;
+// }`;
+
+export const DEFAULT_CONFIG_TS_CONTENTS = `export function modifyConfig(config: Config): Config {
+  return config;
+}`;
+
+export function getChromiumPath(): string {
+  return path.join(getContinueUtilsPath(), ".chromium-browser-snapshots");
+}
+
+export function getContinueUtilsPath(): string {
+  const utilsPath = path.join(getContinueGlobalPath(), ".utils");
+  if (!fs.existsSync(utilsPath)) {
+    fs.mkdirSync(utilsPath);
+  }
+  return utilsPath;
+}
+
+export function getGlobalContinueIgnorePath(): string {
+  const continueIgnorePath = path.join(
+    getContinueGlobalPath(),
+    ".continueignore",
+  );
+  if (!fs.existsSync(continueIgnorePath)) {
+    fs.writeFileSync(continueIgnorePath, "");
+  }
+  return continueIgnorePath;
+}
 
 export function getContinueGlobalPath(): string {
   // This is ~/.continue on mac/linux
@@ -40,6 +84,10 @@ export function getGlobalContextFilePath(): string {
   return path.join(getIndexFolderPath(), "globalContext.json");
 }
 
+export function getSharedConfigFilePath(): string {
+  return path.join(getContinueGlobalPath(), "sharedConfig.json");
+}
+
 export function getSessionFilePath(sessionId: string): string {
   return path.join(getSessionsFolderPath(), `${sessionId}.json`);
 }
@@ -52,27 +100,35 @@ export function getSessionsListPath(): string {
   return filepath;
 }
 
-export function getConfigJsonPath(ideType: IdeType = "vscode"): string {
+export function getConfigJsonPath(): string {
   const p = path.join(getContinueGlobalPath(), "config.json");
-  if (!fs.existsSync(p)) {
+  return p;
+}
+
+export function getConfigYamlPath(ideType?: IdeType): string {
+  const p = path.join(getContinueGlobalPath(), "config.yaml");
+  if (!fs.existsSync(p) && !fs.existsSync(getConfigJsonPath())) {
     if (ideType === "jetbrains") {
-      fs.writeFileSync(p, JSON.stringify(defaultConfigJetBrains, null, 2));
+      fs.writeFileSync(p, YAML.stringify(defaultConfigJetBrains));
     } else {
-      fs.writeFileSync(p, JSON.stringify(defaultConfig, null, 2));
+      fs.writeFileSync(p, YAML.stringify(defaultConfig));
     }
   }
   return p;
 }
 
+export function getPrimaryConfigFilePath(): string {
+  const configYamlPath = getConfigYamlPath();
+  if (fs.existsSync(configYamlPath)) {
+    return configYamlPath;
+  }
+  return getConfigJsonPath();
+}
+
 export function getConfigTsPath(): string {
   const p = path.join(getContinueGlobalPath(), "config.ts");
   if (!fs.existsSync(p)) {
-    fs.writeFileSync(
-      p,
-      `export function modifyConfig(config: Config): Config {
-  return config;
-}`,
-    );
+    fs.writeFileSync(p, DEFAULT_CONFIG_TS_CONTENTS);
   }
 
   const typesPath = path.join(getContinueGlobalPath(), "types");
@@ -157,7 +213,7 @@ export function getContinueRcPath(): string {
   return continuercPath;
 }
 
-export function devDataPath(): string {
+function getDevDataPath(): string {
   const sPath = path.join(getContinueGlobalPath(), "dev_data");
   if (!fs.existsSync(sPath)) {
     fs.mkdirSync(sPath);
@@ -166,14 +222,21 @@ export function devDataPath(): string {
 }
 
 export function getDevDataSqlitePath(): string {
-  return path.join(devDataPath(), "devdata.sqlite");
+  return path.join(getDevDataPath(), "devdata.sqlite");
 }
 
-export function getDevDataFilePath(fileName: string): string {
-  return path.join(devDataPath(), `${fileName}.jsonl`);
+export function getDevDataFilePath(
+  eventName: DevEventName,
+  schema: string,
+): string {
+  const versionPath = path.join(getDevDataPath(), schema);
+  if (!fs.existsSync(versionPath)) {
+    fs.mkdirSync(versionPath);
+  }
+  return path.join(versionPath, `${String(eventName)}.jsonl`);
 }
 
-export function editConfigJson(
+function editConfigJson(
   callback: (config: SerializedContinueConfig) => SerializedContinueConfig,
 ): void {
   const config = fs.readFileSync(getConfigJsonPath(), "utf8");
@@ -184,6 +247,31 @@ export function editConfigJson(
     fs.writeFileSync(getConfigJsonPath(), JSONC.stringify(configJson, null, 2));
   } else {
     console.warn("config.json is not a valid object");
+  }
+}
+
+function editConfigYaml(callback: (config: ConfigYaml) => ConfigYaml): void {
+  const config = fs.readFileSync(getConfigYamlPath(), "utf8");
+  let configYaml = YAML.parse(config);
+  // Check if it's an object
+  if (typeof configYaml === "object" && configYaml !== null) {
+    configYaml = callback(configYaml as any) as any;
+    fs.writeFileSync(getConfigYamlPath(), YAML.stringify(configYaml));
+  } else {
+    console.warn("config.yaml is not a valid object");
+  }
+}
+
+export function editConfigFile(
+  configJsonCallback: (
+    config: SerializedContinueConfig,
+  ) => SerializedContinueConfig,
+  configYamlCallback: (config: ConfigYaml) => ConfigYaml,
+): void {
+  if (fs.existsSync(getConfigYamlPath())) {
+    editConfigYaml(configYamlCallback);
+  } else if (fs.existsSync(getConfigJsonPath())) {
+    editConfigJson(configJsonCallback);
   }
 }
 
@@ -200,6 +288,10 @@ export async function migrate(
   callback: () => void | Promise<void>,
   onAlreadyComplete?: () => void,
 ) {
+  if (process.env.NODE_ENV === "test") {
+    return await Promise.resolve(callback());
+  }
+
   const migrationsPath = getMigrationsFolderPath();
   const migrationPath = path.join(migrationsPath, id);
 
@@ -256,11 +348,6 @@ export function getPathToRemoteConfig(remoteConfigServerUrl: string): string {
   return dir;
 }
 
-export function internalBetaPathExists(): boolean {
-  const sPath = path.join(getContinueGlobalPath(), ".internal_beta");
-  return fs.existsSync(sPath);
-}
-
 export function getConfigJsonPathForRemote(
   remoteConfigServerUrl: string,
 ): string {
@@ -297,8 +384,16 @@ export function getPromptLogsPath(): string {
   return path.join(getLogsDirPath(), "prompt.log");
 }
 
+export function getGlobalFolderWithName(name: string): string {
+  return path.join(getContinueGlobalPath(), name);
+}
+
 export function getGlobalPromptsPath(): string {
-  return path.join(getContinueGlobalPath(), ".prompts");
+  return getGlobalFolderWithName("prompts");
+}
+
+export function getGlobalAssistantsPath(): string {
+  return getGlobalFolderWithName("assistants");
 }
 
 export function readAllGlobalPromptFiles(
@@ -316,11 +411,58 @@ export function readAllGlobalPromptFiles(
     if (stats.isDirectory()) {
       const nestedPromptFiles = readAllGlobalPromptFiles(filepath);
       promptFiles.push(...nestedPromptFiles);
-    } else {
+    } else if (file.endsWith(".prompt")) {
       const content = fs.readFileSync(filepath, "utf8");
       promptFiles.push({ path: filepath, content });
     }
   });
 
   return promptFiles;
+}
+
+export function getRepoMapFilePath(): string {
+  return path.join(getContinueUtilsPath(), "repo_map.txt");
+}
+
+export function getEsbuildBinaryPath(): string {
+  return path.join(getContinueUtilsPath(), "esbuild");
+}
+
+export function migrateV1DevDataFiles() {
+  const devDataPath = getDevDataPath();
+  function moveToV1FolderIfExists(
+    oldFileName: string,
+    newFileName: DevEventName,
+  ) {
+    const oldFilePath = path.join(devDataPath, `${oldFileName}.jsonl`);
+    if (fs.existsSync(oldFilePath)) {
+      const newFilePath = getDevDataFilePath(newFileName, "0.1.0");
+      if (!fs.existsSync(newFilePath)) {
+        fs.copyFileSync(oldFilePath, newFilePath);
+        fs.unlinkSync(oldFilePath);
+      }
+    }
+  }
+  moveToV1FolderIfExists("tokens_generated", "tokensGenerated");
+  moveToV1FolderIfExists("chat", "chatFeedback");
+  moveToV1FolderIfExists("quickEdit", "quickEdit");
+  moveToV1FolderIfExists("autocomplete", "autocomplete");
+}
+
+export function getLocalEnvironmentDotFilePath(): string {
+  return path.join(getContinueGlobalPath(), ".local");
+}
+
+export function getStagingEnvironmentDotFilePath(): string {
+  return path.join(getContinueGlobalPath(), ".staging");
+}
+
+export function getDiffsDirectoryPath(): string {
+  const diffsPath = path.join(getContinueGlobalPath(), ".diffs"); // .replace(/^C:/, "c:"); ??
+  if (!fs.existsSync(diffsPath)) {
+    fs.mkdirSync(diffsPath, {
+      recursive: true,
+    });
+  }
+  return diffsPath;
 }

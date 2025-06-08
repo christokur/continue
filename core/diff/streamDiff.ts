@@ -1,4 +1,5 @@
 import { DiffLine, DiffLineType } from "../index.js";
+
 import { LineStream, matchLine } from "./util.js";
 
 /**
@@ -8,6 +9,7 @@ import { LineStream, matchLine } from "./util.js";
  * - old + same = oldLinesCopy.length
  * ^ (above two guarantee that all lines get represented)
  * - Lines are always output in order, at least among old and new separately
+ * - Old lines in a hunk are always output before the new lines
  */
 export async function* streamDiff(
   oldLines: string[],
@@ -33,7 +35,6 @@ export async function* streamDiff(
 
     let type: DiffLineType;
 
-    let isLineRemoval = false;
     const isNewLine = matchIndex === -1;
 
     if (isNewLine) {
@@ -43,7 +44,6 @@ export async function* streamDiff(
       for (let i = 0; i < matchIndex; i++) {
         yield { type: "old", line: oldLinesCopy.shift()! };
       }
-
       type = isPerfectMatch ? "same" : "old";
     }
 
@@ -58,22 +58,13 @@ export async function* streamDiff(
 
       case "old":
         yield { type, line: oldLinesCopy.shift()! };
-
-        if (oldLinesCopy[0] !== newLine) {
-          yield { type: "new", line: newLine };
-        } else {
-          isLineRemoval = true;
-        }
-
+        yield { type: "new", line: newLine };
         break;
 
       default:
         console.error(`Error streaming diff, unrecognized diff type: ${type}`);
     }
-
-    if (!isLineRemoval) {
-      newLineResult = await newLines.next();
-    }
+    newLineResult = await newLines.next();
   }
 
   // Once at the edge, only one choice

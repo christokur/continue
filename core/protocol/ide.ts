@@ -1,8 +1,9 @@
-import { ControlPlaneSessionInfo } from "../control-plane/client.js";
 import type {
   ContinueRcJson,
   DiffLine,
+  FileStatsMap,
   FileType,
+  IDE,
   IdeInfo,
   IdeSettings,
   IndexTag,
@@ -10,28 +11,30 @@ import type {
   Problem,
   Range,
   RangeInFile,
+  TerminalOptions,
   Thread,
-} from "../index.js";
+} from "../";
+import { ControlPlaneSessionInfo } from "../control-plane/AuthTypes";
+
+export interface GetGhTokenArgs {
+  force?: boolean;
+}
 
 export type ToIdeFromWebviewOrCoreProtocol = {
   // Methods from IDE type
   getIdeInfo: [undefined, IdeInfo];
   getWorkspaceDirs: [undefined, string[]];
-  listFolders: [undefined, string[]];
   writeFile: [{ path: string; contents: string }, void];
   showVirtualFile: [{ name: string; content: string }, void];
-  getContinueDir: [undefined, string];
   openFile: [{ path: string }, void];
-  runCommand: [{ command: string }, void];
+  openUrl: [string, void];
+  runCommand: [{ command: string; options?: TerminalOptions }, void];
   getSearchResults: [{ query: string }, string];
-  subprocess: [{ command: string }, [string, string]];
+  getFileResults: [{ pattern: string }, string[]];
+  subprocess: [{ command: string; cwd?: string }, [string, string]];
   saveFile: [{ filepath: string }, void];
   fileExists: [{ filepath: string }, boolean];
   readFile: [{ filepath: string }, string];
-  showDiff: [
-    { filepath: string; newContents: string; stepIndex: number },
-    void,
-  ];
   diffLine: [
     {
       diffLine: DiffLine;
@@ -43,11 +46,21 @@ export type ToIdeFromWebviewOrCoreProtocol = {
   ];
   getProblems: [{ filepath: string }, Problem[]];
   getOpenFiles: [undefined, string[]];
-  getCurrentFile: [undefined, string | undefined];
+  getCurrentFile: [
+    undefined,
+    (
+      | undefined
+      | {
+          isUntitled: boolean;
+          path: string;
+          contents: string;
+        }
+    ),
+  ];
   getPinnedFiles: [undefined, string[]];
   showLines: [{ filepath: string; startLine: number; endLine: number }, void];
   readRangeInFile: [{ filepath: string; range: Range }, string];
-  getDiff: [undefined, string];
+  getDiff: [{ includeUnstaged: boolean }, string[]];
   getWorkspaceConfigs: [undefined, ContinueRcJson[]];
   getTerminalContents: [undefined, string];
   getDebugLocals: [{ threadIndex: number }, string];
@@ -59,6 +72,8 @@ export type ToIdeFromWebviewOrCoreProtocol = {
   isTelemetryEnabled: [undefined, boolean];
   getUniqueId: [undefined, string];
   getTags: [string, IndexTag[]];
+  readSecrets: [{ keys: string[] }, Record<string, string>];
+  writeSecrets: [{ secrets: Record<string, string> }, void];
   // end methods from IDE type
 
   getIdeSettings: [undefined, IdeSettings];
@@ -67,27 +82,25 @@ export type ToIdeFromWebviewOrCoreProtocol = {
   getBranch: [{ dir: string }, string];
   getRepoName: [{ dir: string }, string | undefined];
 
-  errorPopup: [{ message: string }, void];
-  infoPopup: [{ message: string }, void];
+  showToast: [
+    Parameters<IDE["showToast"]>,
+    Awaited<ReturnType<IDE["showToast"]>>,
+  ];
   getGitRootPath: [{ dir: string }, string | undefined];
   listDir: [{ dir: string }, [string, FileType][]];
-  getLastModified: [{ files: string[] }, { [path: string]: number }];
+  getFileStats: [{ files: string[] }, FileStatsMap];
 
   gotoDefinition: [{ location: Location }, RangeInFile[]];
 
-  getGitHubAuthToken: [undefined, string | undefined];
   getControlPlaneSessionInfo: [
-    { silent: boolean },
+    { silent: boolean; useOnboarding: boolean },
     ControlPlaneSessionInfo | undefined,
   ];
   logoutOfControlPlane: [undefined, void];
-  pathSep: [undefined, string];
+  reportError: [any, void];
+  closeSidebar: [undefined, void];
 };
 
 export type ToWebviewOrCoreFromIdeProtocol = {
   didChangeActiveTextEditor: [{ filepath: string }, void];
-  didChangeControlPlaneSessionInfo: [
-    { sessionInfo: ControlPlaneSessionInfo | undefined },
-    void,
-  ];
 };

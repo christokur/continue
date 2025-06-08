@@ -8,7 +8,10 @@
 
 <div align="center">
 
-**[Continue](https://docs.continue.dev) is the leading open-source AI code assistant. You can connect any models and any context to build custom autocomplete and chat experiences inside [VS Code](https://marketplace.visualstudio.com/items?itemName=Continue.continue) and [JetBrains](https://plugins.jetbrains.com/plugin/22707-continue-extension)**
+**[Continue](https://docs.continue.dev) enables developers to create, share, and use custom AI code assistants with our
+open-source [VS Code](https://marketplace.visualstudio.com/items?itemName=Continue.continue)
+and [JetBrains](https://plugins.jetbrains.com/plugin/22707-continue-extension) extensions
+and [hub of models, rules, prompts, docs, and other building blocks](https://hub.continue.dev)**
 
 </div>
 
@@ -20,66 +23,52 @@
 <a target="_blank" href="https://docs.continue.dev" style="background:none">
     <img src="https://img.shields.io/badge/continue_docs-%23BE1B55" style="height: 22px;" />
 </a>
+<a target="_blank" href="https://changelog.continue.dev" style="background:none">
+    <img src="https://img.shields.io/badge/changelog-%96EFF3" style="height: 22px;" />
+</a>
 <a target="_blank" href="https://discord.gg/vapESyrFmJ" style="background:none">
     <img src="https://img.shields.io/badge/discord-join-continue.svg?labelColor=191937&color=6F6FF7&logo=discord" style="height: 22px;" />
 </a>
 
 <p></p>
 
-## Easily understand code sections
+## Agent
 
-![understand](docs/static/img/understand.gif)
+[Agent](https://continue.dev/docs/agent/how-to-use-it) enables you to make more substantial changes to your codebase
 
-VS Code: `cmd+L` (MacOS) / `ctrl+L` (Windows)
+![agent](docs/static/img/agent.gif)
 
-JetBrains: `cmd+J` (MacOS) / `ctrl+J` (Windows)
+## Chat
 
-## Tab to autocomplete code suggestions
+[Chat](https://continue.dev/docs/chat/how-to-use-it) makes it easy to ask for help from an LLM without needing to leave
+the IDE
+
+![chat](docs/static/img/chat.gif)
+
+## Autocomplete
+
+[Autocomplete](https://continue.dev/docs/autocomplete/how-to-use-it) provides inline code suggestions as you type
 
 ![autocomplete](docs/static/img/autocomplete.gif)
 
-VS Code: `tab` (MacOS) / `tab` (Windows)
+## Edit
 
-JetBrains: `tab` (MacOS) / `tab` (Windows)
+[Edit](https://continue.dev/docs/edit/how-to-use-it) is a convenient way to modify code without leaving your current
+file
 
-## Refactor functions where you are coding
-
-![inline](docs/static/img/inline.gif)
-
-VS Code: `cmd+I` (MacOS) / `ctrl+I` (Windows)
-
-JetBrains: `cmd+I` (MacOS) / `ctrl+I` (Windows)
-
-## Ask questions about your codebase
-
-![codebase](docs/static/img/codebase.gif)
-
-VS Code: `cmd+enter` (MacOS) / `ctrl+enter` (Windows)
-
-JetBrains: `cmd+enter` (MacOS) / `ctrl+enter` (Windows)
-
-## Quickly use documentation as context
-
-![docs](docs/static/img/docs.gif)
-
-VS Code: `@docs` (MacOS) / `@docs` (Windows)
-
-JetBrains: `@docs` (MacOS) / `@docs` (Windows)
+![edit](docs/static/img/edit.gif)
 
 </div>
 
 ## Getting Started
 
-### Download for [VS Code](https://marketplace.visualstudio.com/items?itemName=Continue.continue) and [JetBrains](https://plugins.jetbrains.com/plugin/22707-continue-extension)
-
-You can try out Continue with our free trial models before configuring your setup.
-
-Learn more about the models and providers [here](https://continue.dev/docs/setup/overview).
+Learn about how to install and use Continue in the docs [here](https://continue.dev/docs/getting-started/install)
 
 ## Contributing
 
-Check out the [contribution ideas board](https://github.com/orgs/continuedev/projects/2), read the [contributing guide](https://github.com/continuedev/continue/blob/main/CONTRIBUTING.md), and join [#contribute on Discord](https://discord.gg/vapESyrFmJ)
+Read the [contributing guide](https://github.com/continuedev/continue/blob/main/CONTRIBUTING.md), and
+join [#contribute on Discord](https://discord.gg/vapESyrFmJ).
 
 ## License
 
-[Apache 2.0 © 2023 Continue Dev, Inc.](./LICENSE)
+[Apache 2.0 © 2023-2024 Continue Dev, Inc.](./LICENSE)

@@ -1,29 +1,13 @@
 import { FromWebviewProtocol, ToWebviewProtocol } from "core/protocol";
-import { Message } from "core/util/messenger";
-import fs from "node:fs";
-import path from "path";
+import { Message } from "core/protocol/messenger";
+import { extractMinimalStackTraceInfo } from "core/util/extractMinimalStackTraceInfo";
+import { Telemetry } from "core/util/posthog";
 import { v4 as uuidv4 } from "uuid";
 import * as vscode from "vscode";
-import { IMessenger } from "../../../core/util/messenger";
-import { getExtensionUri } from "./util/vscode";
 
-export async function showTutorial() {
-  const tutorialPath = path.join(
-    getExtensionUri().fsPath,
-    "continue_tutorial.py",
-  );
-  // Ensure keyboard shortcuts match OS
-  if (process.platform !== "darwin") {
-    let tutorialContent = fs.readFileSync(tutorialPath, "utf8");
-    tutorialContent = tutorialContent.replace("⌘", "^").replace("Cmd", "Ctrl");
-    fs.writeFileSync(tutorialPath, tutorialContent);
-  }
+import { IMessenger } from "../../../core/protocol/messenger";
 
-  const doc = await vscode.workspace.openTextDocument(
-    vscode.Uri.file(tutorialPath),
-  );
-  await vscode.window.showTextDocument(doc, { preview: false });
-}
+import { handleLLMError } from "./util/errorHandling";
 
 export class VsCodeWebviewProtocol
   implements IMessenger<FromWebviewProtocol, ToWebviewProtocol>
@@ -66,43 +50,61 @@ export class VsCodeWebviewProtocol
     this._webview = webView;
     this._webviewListener?.dispose();
 
-    this._webviewListener = this._webview.onDidReceiveMessage(async (msg) => {
-      if (!msg.messageType || !msg.messageId) {
+    const handleMessage = async (msg: Message): Promise<void> => {
+      if (!("messageType" in msg) || !("messageId" in msg)) {
         throw new Error(`Invalid webview protocol msg: ${JSON.stringify(msg)}`);
       }
 
       const respond = (message: any) =>
         this.send(msg.messageType, message, msg.messageId);
 
-      const handlers = this.listeners.get(msg.messageType) || [];
+      const handlers =
+        this.listeners.get(msg.messageType as keyof FromWebviewProtocol) || [];
       for (const handler of handlers) {
         try {
           const response = await handler(msg);
+          // For generator types e.g. llm/streamChat
           if (
             response &&
             typeof response[Symbol.asyncIterator] === "function"
           ) {
             let next = await response.next();
             while (!next.done) {
-              respond(next.value);
+              respond({
+                done: false,
+                content: next.value,
+                status: "success",
+              });
               next = await response.next();
             }
-            respond({ done: true, content: next.value?.content });
+            respond({
+              done: true,
+              content: next.value,
+              status: "success",
+            });
           } else {
-            respond(response || {});
+            respond({ done: true, content: response, status: "success" });
           }
         } catch (e: any) {
-          respond({ done: true, error: e });
+          if (await handleLLMError(e)) {
+            // Respond without an error, so the UI doesn't show the error component
+            respond({ done: true, status: "error" });
+          }
+          let message = e.message;
+          respond({ done: true, error: message, status: "error" });
 
+          const stringified = JSON.stringify({ msg }, null, 2);
           console.error(
-            `Error handling webview message: ${JSON.stringify(
-              { msg },
-              null,
-              2,
-            )}\n\n${e}`,
+            `Error handling webview message: ${stringified}\n\n${e}`,
           );
 
-          let message = e.message;
+          if (
+            stringified.includes("llm/streamChat") ||
+            stringified.includes("chatDescriber/describe")
+          ) {
+            return;
+          }
+
           if (e.cause) {
             if (e.cause.name === "ConnectTimeoutError") {
               message = `Connection timed out. If you expect it to take a long time to connect, you can increase the timeout in config.json by setting "requestOptions": { "timeout": 10000 }. You can find the full config reference here: https://docs.continue.dev/reference/config`;
@@ -129,56 +131,29 @@ export class VsCodeWebviewProtocol
                 if (selection === "Add API Key") {
                   this.request("addApiKey", undefined);
                 } else if (selection === "Use Local Model") {
-                  this.request("setupLocalModel", undefined);
-                }
-              });
-          } else if (message.includes("Please sign in with GitHub")) {
-            vscode.window
-              .showInformationMessage(
-                message,
-                "Sign In",
-                "Use API key / local model",
-              )
-              .then((selection) => {
-                if (selection === "Sign In") {
-                  vscode.authentication
-                    .getSession("github", [], {
-                      createIfNone: true,
-                    })
-                    .then(() => {
-                      this.reloadConfig();
-                    });
-                } else if (selection === "Use API key / local model") {
-                  this.request("openOnboarding", undefined);
+                  this.request("setupLocalConfig", undefined);
                 }
               });
           } else {
-            vscode.window
-              .showErrorMessage(
-                message.split("\n\n")[0],
-                "Show Logs",
-                "Troubleshooting",
-              )
-              .then((selection) => {
-                if (selection === "Show Logs") {
-                  vscode.commands.executeCommand(
-                    "workbench.action.toggleDevTools",
-                  );
-                } else if (selection === "Troubleshooting") {
-                  vscode.env.openExternal(
-                    vscode.Uri.parse(
-                      "https://docs.continue.dev/troubleshooting",
-                    ),
-                  );
-                }
-              });
+            Telemetry.capture(
+              "webview_protocol_error",
+              {
+                messageType: msg.messageType,
+                errorMsg: message.split("\n\n")[0],
+                stack: extractMinimalStackTraceInfo(e.stack),
+              },
+              false,
+            );
           }
         }
       }
-    });
+    };
+
+    this._webviewListener = this._webview.onDidReceiveMessage(handleMessage);
   }
 
   constructor(private readonly reloadConfig: () => void) {}
+
   invoke<T extends keyof FromWebviewProtocol>(
     messageType: T,
     data: FromWebviewProtocol[T][0],
@@ -187,36 +162,44 @@ export class VsCodeWebviewProtocol
     throw new Error("Method not implemented.");
   }
 
-  onError(handler: (error: Error) => void): void {
+  onError(handler: (message: Message, error: Error) => void): void {
     throw new Error("Method not implemented.");
   }
 
   public request<T extends keyof ToWebviewProtocol>(
     messageType: T,
     data: ToWebviewProtocol[T][0],
+    retry: boolean = true,
   ): Promise<ToWebviewProtocol[T][1]> {
     const messageId = uuidv4();
     return new Promise(async (resolve) => {
-      let i = 0;
-      while (!this.webview) {
-        if (i >= 10) {
-          resolve(undefined);
-          return;
-        } else {
-          await new Promise((res) => setTimeout(res, i >= 5 ? 1000 : 500));
-          i++;
+      if (retry) {
+        let i = 0;
+        while (!this.webview) {
+          if (i >= 10) {
+            resolve(undefined);
+            return;
+          } else {
+            await new Promise((res) => setTimeout(res, i >= 5 ? 1000 : 500));
+            i++;
+          }
         }
       }
 
       this.send(messageType, data, messageId);
-      const disposable = this.webview.onDidReceiveMessage(
-        (msg: Message<ToWebviewProtocol[T][1]>) => {
-          if (msg.messageId === messageId) {
-            resolve(msg.data);
-            disposable?.dispose();
-          }
-        },
-      );
+
+      if (this.webview) {
+        const disposable = this.webview.onDidReceiveMessage(
+          (msg: Message<ToWebviewProtocol[T][1]>) => {
+            if (msg.messageId === messageId) {
+              resolve(msg.data);
+              disposable?.dispose();
+            }
+          },
+        );
+      } else if (!retry) {
+        resolve(undefined);
+      }
     });
   }
 }

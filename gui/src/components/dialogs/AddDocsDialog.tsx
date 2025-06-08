@@ -1,194 +1,167 @@
-import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/outline";
-import { SiteIndexingConfig } from "core";
+import { InformationCircleIcon } from "@heroicons/react/24/outline";
+import { IndexingStatus, SiteIndexingConfig } from "core";
 import { usePostHog } from "posthog-js/react";
-import { useContext, useLayoutEffect, useRef, useState } from "react";
+import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useDispatch } from "react-redux";
-import { Button, HelperText, Input, lightGray } from "..";
+import { Input, SecondaryButton } from "..";
 import { IdeMessengerContext } from "../../context/IdeMessenger";
-import { setShowDialog } from "../../redux/slices/uiStateSlice";
-
-const DEFAULT_MAX_DEPTH = 3;
+import { useAppSelector } from "../../redux/hooks";
+import { updateIndexingStatus } from "../../redux/slices/indexingSlice";
+import { setDialogMessage, setShowDialog } from "../../redux/slices/uiSlice";
+import { ToolTip } from "../gui/Tooltip";
+import DocsIndexingPeeks from "../mainInput/Lump/sections/docs/DocsIndexingPeeks";
 
 function AddDocsDialog() {
   const posthog = usePostHog();
   const dispatch = useDispatch();
 
-  const ref = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const urlRef = useRef<HTMLInputElement>(null);
 
   const [title, setTitle] = useState("");
   const [startUrl, setStartUrl] = useState("");
-  const [rootUrl, setRootUrl] = useState("");
   const [faviconUrl, setFaviconUrl] = useState("");
-  const [maxDepth, setMaxDepth] = useState<number | string>("");
-  const [isOpen, setIsOpen] = useState(false);
 
   const ideMessenger = useContext(IdeMessengerContext);
+  const indexingStatuses = useAppSelector(
+    (store) => store.indexing.indexing.statuses,
+  );
+
+  const docsIndexingStatuses: IndexingStatus[] = useMemo(() => {
+    return Object.values(indexingStatuses).filter(
+      (status) => status.type === "docs" && status.status === "indexing",
+    );
+  }, [indexingStatuses]);
 
   const isFormValid = startUrl && title;
 
   useLayoutEffect(() => {
     setTimeout(() => {
-      if (ref.current) {
-        ref.current.focus();
+      if (titleRef.current) {
+        titleRef.current.focus();
       }
     }, 100);
-  }, [ref]);
+  }, [titleRef]);
 
-  function onSubmit(e) {
+  const closeDialog = () => {
+    dispatch(setShowDialog(false));
+    dispatch(setDialogMessage(undefined));
+  };
+
+  function onSubmit(e: any) {
     e.preventDefault();
 
     const siteIndexingConfig: SiteIndexingConfig = {
       startUrl,
-      rootUrl,
       title,
-      maxDepth: typeof maxDepth === "string" ? DEFAULT_MAX_DEPTH : maxDepth,
-      faviconUrl: new URL("/favicon.ico", startUrl).toString(),
+      faviconUrl,
     };
 
     ideMessenger.post("context/addDocs", siteIndexingConfig);
 
     setTitle("");
     setStartUrl("");
-    setRootUrl("");
-    setMaxDepth("");
     setFaviconUrl("");
 
-    dispatch(setShowDialog(false));
-
     posthog.capture("add_docs_gui", { url: startUrl });
+
+    // Optimistic status update
+    dispatch(
+      updateIndexingStatus({
+        type: "docs",
+        description: "Initializing",
+        id: startUrl,
+        progress: 0,
+        status: "indexing",
+        title,
+        url: startUrl,
+      }),
+    );
   }
 
   return (
-    <div className="p-4">
-      <div className="mb-8">
-        <h1>Add a documentation site</h1>
-
-        <p>
-          Continue pre-indexes many common documentation sites, but if there's
-          one you don't see in the dropdown, enter the URL here.
+    <div className="px-2 pt-4 sm:px-4">
+      <div className="">
+        <h1 className="mb-0 hidden sm:block">Add documentation</h1>
+        <h1 className="sm:hidden">Add docs</h1>
+        <p className="m-0 mt-2 p-0 text-stone-500">
+          Common documentation sites are cached for faster loading
         </p>
+        <div className="mt-3">
+          <form onSubmit={onSubmit} className="flex flex-col gap-1">
+            <div className="flex flex-col gap-2">
+              <label className="flex w-full flex-col gap-1">
+                <div className="flex flex-row items-center gap-1">
+                  <span>Title</span>
+                  <div>
+                    <InformationCircleIcon
+                      data-tooltip-id={"add-docs-form-title"}
+                      className="text-lightgray h-3.5 w-3.5 select-none"
+                    />
+                    <ToolTip id={"add-docs-form-title"} place="top">
+                      The title that will be displayed to users in the `@docs`
+                      submenu
+                    </ToolTip>
+                  </div>
+                </div>
 
-        <p>
-          Continue's indexing engine will crawl the site and generate embeddings
-          so that you can ask questions.
-        </p>
+                <Input
+                  type="text"
+                  placeholder="Title"
+                  value={title}
+                  ref={titleRef}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </label>
+
+              <label className="flex w-full flex-col gap-1">
+                <div className="flex flex-row items-center gap-1">
+                  <span className="line-clamp-1 whitespace-nowrap">
+                    Start URL
+                  </span>
+                  <div>
+                    <InformationCircleIcon
+                      data-tooltip-id={"add-docs-form-url"}
+                      className="text-lightgray h-3.5 w-3.5 select-none"
+                    />
+                    <ToolTip id={"add-docs-form-url"} place="top">
+                      The starting location to begin crawling the documentation
+                      site
+                    </ToolTip>
+                  </div>
+                </div>
+                <Input
+                  ref={urlRef}
+                  type="url"
+                  placeholder="Start URL"
+                  value={startUrl}
+                  onChange={(e) => {
+                    setStartUrl(e.target.value);
+                  }}
+                />
+              </label>
+            </div>
+            <div className="flex flex-row justify-end gap-2">
+              <SecondaryButton
+                className="min-w-16"
+                disabled={!isFormValid}
+                type="submit"
+              >
+                Add
+              </SecondaryButton>
+            </div>
+          </form>
+        </div>
       </div>
 
-      <form onSubmit={onSubmit} className="flex flex-col space-y-4">
-        <label>
-          Title
-          <Input
-            type="text"
-            placeholder="Title"
-            value={title}
-            ref={ref}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <HelperText>
-            The title that will be displayed to users in the `@docs` submenu
-          </HelperText>
-        </label>
-
-        <label>
-          Start URL
-          <Input
-            type="url"
-            placeholder="Start URL"
-            value={startUrl}
-            onChange={(e) => {
-              setStartUrl(e.target.value);
-            }}
-          />
-          <HelperText>
-            The starting location to begin crawling the documentation site
-          </HelperText>
-        </label>
-
-        <div
-          className="cursor-pointer"
-          onClick={() => setIsOpen((prev) => !prev)}
-        >
-          {isOpen ? (
-            <ChevronUpIcon
-              width="1.0em"
-              height="1.0em"
-              style={{ color: lightGray }}
-            ></ChevronUpIcon>
-          ) : (
-            <ChevronDownIcon
-              width="1.0em"
-              height="1.0em"
-              style={{ color: lightGray }}
-            ></ChevronDownIcon>
-          )}
-          <span className="ms-1">Advanced</span>
-        </div>
-
-        {isOpen && (
-          <div className="pt-2">
-            <label>
-              Root URL [Optional]
-              <Input
-                type="url"
-                placeholder="Root URL"
-                value={rootUrl}
-                onChange={(e) => {
-                  setRootUrl(e.target.value);
-                }}
-              />
-              <HelperText>
-                Limits the crawler to pages within the same domain and path as
-                the Root URL
-              </HelperText>
-            </label>
-
-            <label>
-              Favicon URL [Optional]
-              <Input
-                type="url"
-                placeholder={`${startUrl}/favicon.ico`}
-                value={faviconUrl}
-                onChange={(e) => {
-                  setFaviconUrl(e.target.value);
-                }}
-              />
-              <HelperText>
-                The URL path to a favicon for the site - by default, it will be
-                `/favicon.ico` path from the Start URL
-              </HelperText>
-            </label>
-
-            <label>
-              Max Depth [Optional]
-              <Input
-                type="text"
-                inputMode="numeric"
-                placeholder={`Default: ${DEFAULT_MAX_DEPTH}`}
-                title="The maximum search tree depth - where your input url is the root node"
-                value={maxDepth}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  if (value == "") {
-                    setMaxDepth("");
-                  } else if (!isNaN(+value) && Number(value) > 0) {
-                    setMaxDepth(Number(value));
-                  }
-                }}
-              />
-              <HelperText>
-                Limits the maximum search tree depth of the crawler - 3 by
-                default
-              </HelperText>
-            </label>
-          </div>
-        )}
-
-        <div className="flex justify-end">
-          <Button disabled={!isFormValid} type="submit">
-            Submit
-          </Button>
-        </div>
-      </form>
+      {docsIndexingStatuses.length > 0 && (
+        <>
+          <DocsIndexingPeeks statuses={docsIndexingStatuses} />
+          <p className="mt-2 flex flex-row items-center gap-1 p-0 px-1 text-center text-xs text-stone-500">
+            Closing this dialog will not affect indexing progress
+          </p>
+        </>
+      )}
     </div>
   );
 }

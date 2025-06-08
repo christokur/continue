@@ -4,13 +4,14 @@
 
 ## Checklist
 
-- [ ] The base branch of this PR is `dev`, rather than `main`
-- [ ] The relevant docs, if any, have been updated or created
+- [] I've read the [contributing guide](https://github.com/continuedev/continue/blob/main/CONTRIBUTING.md)
+- [] The relevant docs, if any, have been updated or created
+- [] The relevant tests, if any, have been updated or created
 
 ## Screenshots
 
-[ "For visual changes, include screenshots." ]
+[ For visual changes, include screenshots. Screen recordings are particularly helpful, and appreciated! ]
 
-## Testing
+## Tests
 
-[ For new or modified features, provide testing instructions. ]
+[ What tests were added or updated to ensure the changes work as expected? ]

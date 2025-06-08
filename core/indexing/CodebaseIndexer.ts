@@ -1,13 +1,30 @@
+import * as fs from "fs/promises";
+
 import { ConfigHandler } from "../config/ConfigHandler.js";
 import { IContinueServerClient } from "../continueServer/interface.js";
-import { IDE, IndexTag, IndexingProgressUpdate } from "../index.js";
-import { CodeSnippetsCodebaseIndex } from "./CodeSnippetsIndex.js";
-import { FullTextSearchCodebaseIndex } from "./FullTextSearch.js";
-import { LanceDbIndex } from "./LanceDbIndex.js";
+import { IDE, IndexingProgressUpdate, IndexTag } from "../index.js";
+import type { FromCoreProtocol, ToCoreProtocol } from "../protocol";
+import type { IMessenger } from "../protocol/messenger";
+import { extractMinimalStackTraceInfo } from "../util/extractMinimalStackTraceInfo.js";
+import { getIndexSqlitePath, getLanceDbPath } from "../util/paths.js";
+import { Telemetry } from "../util/posthog.js";
+import { findUriInDirs, getUriPathBasename } from "../util/uri.js";
+
+import { ContinueServerClient } from "../continueServer/stubs/client";
+import { LLMError } from "../llm/index.js";
+import { getRootCause } from "../util/errors.js";
 import { ChunkCodebaseIndex } from "./chunk/ChunkCodebaseIndex.js";
+import { CodeSnippetsCodebaseIndex } from "./CodeSnippetsIndex.js";
+import { FullTextSearchCodebaseIndex } from "./FullTextSearchCodebaseIndex.js";
+import { LanceDbIndex } from "./LanceDbIndex.js";
 import { getComputeDeleteAddRemove } from "./refreshIndex.js";
-import { CodebaseIndex, IndexResultType } from "./types.js";
-import { walkDir } from "./walkDir.js";
+import {
+  CodebaseIndex,
+  IndexResultType,
+  PathAndCacheKey,
+  RefreshIndexResults,
+} from "./types.js";
+import { walkDirAsync } from "./walkDir.js";
 
 export class PauseToken {
   constructor(private _paused: boolean) {}
@@ -22,84 +39,261 @@ export class PauseToken {
 }
 
 export class CodebaseIndexer {
+  /**
+   * We batch for two reasons:
+   * - To limit memory usage for indexes that perform computations locally, e.g. FTS
+   * - To make as few requests as possible to the embeddings providers
+   */
+  filesPerBatch = 500;
+  private indexingCancellationController: AbortController | undefined;
+  private codebaseIndexingState: IndexingProgressUpdate;
+  private readonly pauseToken: PauseToken;
+
+  // Note that we exclude certain Sqlite errors that we do not want to clear the indexes on,
+  // e.g. a `SQLITE_BUSY` error.
+  errorsRegexesToClearIndexesOn = [
+    /Invalid argument error: Values length (d+) is less than the length ((d+)) multiplied by the value size (d+)/,
+    /SQLITE_CONSTRAINT/,
+    /SQLITE_ERROR/,
+    /SQLITE_CORRUPT/,
+    /SQLITE_IOERR/,
+    /SQLITE_FULL/,
+  ];
+
   constructor(
     private readonly configHandler: ConfigHandler,
-    private readonly ide: IDE,
-    private readonly pauseToken: PauseToken,
-    private readonly continueServerClient: IContinueServerClient,
-  ) {}
+    protected readonly ide: IDE,
+    private readonly messenger?: IMessenger<ToCoreProtocol, FromCoreProtocol>,
+    initialPaused: boolean = false,
+  ) {
+    this.codebaseIndexingState = {
+      status: "loading",
+      desc: "loading",
+      progress: 0,
+    };
 
-  private async getIndexesToBuild(): Promise<CodebaseIndex[]> {
-    const config = await this.configHandler.loadConfig();
+    // Initialize pause token
+    this.pauseToken = new PauseToken(initialPaused);
+  }
 
-    const indexes = [
+  /**
+   * Set the paused state of the indexer
+   */
+  set paused(value: boolean) {
+    this.pauseToken.paused = value;
+  }
+
+  /**
+   * Get the current paused state of the indexer
+   */
+  get paused(): boolean {
+    return this.pauseToken.paused;
+  }
+
+  async clearIndexes() {
+    const sqliteFilepath = getIndexSqlitePath();
+    const lanceDbFolder = getLanceDbPath();
+
+    try {
+      await fs.unlink(sqliteFilepath);
+    } catch (error) {
+      console.error(`Error deleting ${sqliteFilepath} folder: ${error}`);
+    }
+
+    try {
+      await fs.rm(lanceDbFolder, { recursive: true, force: true });
+    } catch (error) {
+      console.error(`Error deleting ${lanceDbFolder}: ${error}`);
+    }
+  }
+
+  protected async getIndexesToBuild(): Promise<CodebaseIndex[]> {
+    const { config } = await this.configHandler.loadConfig();
+    if (!config) {
+      return [];
+    }
+
+    const embeddingsModel = config.selectedModelByRole.embed;
+    if (!embeddingsModel) {
+      return [];
+    }
+
+    const ideSettings = await this.ide.getIdeSettings();
+    if (!ideSettings) {
+      return [];
+    }
+    const continueServerClient = new ContinueServerClient(
+      ideSettings.remoteConfigServerUrl,
+      ideSettings.userToken,
+    );
+    if (!continueServerClient) {
+      return [];
+    }
+
+    const indexes: CodebaseIndex[] = [
       new ChunkCodebaseIndex(
         this.ide.readFile.bind(this.ide),
-        this.continueServerClient,
-        config.embeddingsProvider.maxChunkSize,
+        continueServerClient,
+        embeddingsModel.maxEmbeddingChunkSize,
       ), // Chunking must come first
-      new LanceDbIndex(
-        config.embeddingsProvider,
-        this.ide.readFile.bind(this.ide),
-        this.continueServerClient,
-      ),
+    ];
+
+    const lanceDbIndex = await LanceDbIndex.create(
+      embeddingsModel,
+      this.ide.readFile.bind(this.ide),
+    );
+
+    if (lanceDbIndex) {
+      indexes.push(lanceDbIndex);
+    }
+
+    indexes.push(
       new FullTextSearchCodebaseIndex(),
       new CodeSnippetsCodebaseIndex(this.ide),
-    ];
+    );
 
     return indexes;
   }
 
-  public async refreshFile(file: string): Promise<void> {
+  private totalIndexOps(results: RefreshIndexResults): number {
+    return (
+      results.compute.length +
+      results.del.length +
+      results.addTag.length +
+      results.removeTag.length
+    );
+  }
+
+  private singleFileIndexOps(
+    results: RefreshIndexResults,
+    lastUpdated: PathAndCacheKey[],
+    filePath: string,
+  ): [RefreshIndexResults, PathAndCacheKey[]] {
+    const filterFn = (item: PathAndCacheKey) => item.path === filePath;
+    const compute = results.compute.filter(filterFn);
+    const del = results.del.filter(filterFn);
+    const addTag = results.addTag.filter(filterFn);
+    const removeTag = results.removeTag.filter(filterFn);
+    const newResults = {
+      compute,
+      del,
+      addTag,
+      removeTag,
+    };
+    const newLastUpdated = lastUpdated.filter(filterFn);
+    return [newResults, newLastUpdated];
+  }
+
+  public async refreshFile(
+    file: string,
+    workspaceDirs: string[],
+  ): Promise<void> {
     if (this.pauseToken.paused) {
       // NOTE: by returning here, there is a chance that while paused a file is modified and
       // then after unpausing the file is not reindexed
       return;
     }
-    const workspaceDir = await this.getWorkspaceDir(file);
-    if (!workspaceDir) {
+    const { foundInDir } = findUriInDirs(file, workspaceDirs);
+    if (!foundInDir) {
       return;
     }
-    const branch = await this.ide.getBranch(workspaceDir);
-    const repoName = await this.ide.getRepoName(workspaceDir);
-    const stats = await this.ide.getLastModified([file]);
+    const branch = await this.ide.getBranch(foundInDir);
+    const repoName = await this.ide.getRepoName(foundInDir);
     const indexesToBuild = await this.getIndexesToBuild();
-    for (const codebaseIndex of indexesToBuild) {
-      const tag: IndexTag = {
-        directory: workspaceDir,
+    const stats = await this.ide.getFileStats([file]);
+    const filePath = Object.keys(stats)[0];
+    for (const index of indexesToBuild) {
+      const tag = {
+        directory: foundInDir,
         branch,
-        artifactId: codebaseIndex.artifactId,
+        artifactId: index.artifactId,
       };
-      const [results, lastUpdated, markComplete] = await getComputeDeleteAddRemove(
-        tag,
-        { ...stats },
-        (filepath) => this.ide.readFile(filepath),
-        repoName,
+      const [fullResults, fullLastUpdated, markComplete] =
+        await getComputeDeleteAddRemove(
+          tag,
+          { ...stats },
+          (filepath) => this.ide.readFile(filepath),
+          repoName,
+        );
+
+      const [results, lastUpdated] = this.singleFileIndexOps(
+        fullResults,
+        fullLastUpdated,
+        filePath,
       );
-      for await (const _ of codebaseIndex.update(tag, results, markComplete, repoName)) {
-        lastUpdated.forEach((lastUpdated, path) => {
-          markComplete([lastUpdated], IndexResultType.UpdateLastUpdated);
-        });
+      // Don't update if nothing to update. Some of the indices might do unnecessary setup work
+      if (this.totalIndexOps(results) + lastUpdated.length === 0) {
+        continue;
+      }
+
+      for await (const _ of index.update(
+        tag,
+        results,
+        markComplete,
+        repoName,
+      )) {
       }
     }
   }
 
-  async *refresh(
-    workspaceDirs: string[],
+  async *refreshFiles(files: string[]): AsyncGenerator<IndexingProgressUpdate> {
+    let progress = 0;
+    if (files.length === 0) {
+      yield {
+        progress: 1,
+        desc: "Indexing Complete",
+        status: "done",
+      };
+    }
+
+    const workspaceDirs = await this.ide.getWorkspaceDirs();
+
+    const progressPer = 1 / files.length;
+    try {
+      for (const file of files) {
+        yield {
+          progress,
+          desc: `Indexing file ${file}...`,
+          status: "indexing",
+        };
+        await this.refreshFile(file, workspaceDirs);
+
+        progress += progressPer;
+
+        if (this.pauseToken.paused) {
+          yield* this.yieldUpdateAndPause();
+        }
+      }
+
+      yield {
+        progress: 1,
+        desc: "Indexing Complete",
+        status: "done",
+      };
+    } catch (err) {
+      yield this.handleErrorAndGetProgressUpdate(err);
+    }
+  }
+
+  async *refreshDirs(
+    dirs: string[],
     abortSignal: AbortSignal,
   ): AsyncGenerator<IndexingProgressUpdate> {
     let progress = 0;
 
-    if (workspaceDirs.length === 0) {
+    if (dirs.length === 0) {
       yield {
-        progress,
+        progress: 1,
         desc: "Nothing to index",
-        status: "disabled",
+        status: "done",
       };
       return;
     }
 
-    const config = await this.configHandler.loadConfig();
+    const { config } = await this.configHandler.loadConfig();
+    if (!config) {
+      return;
+    }
     if (config.disableIndexing) {
       yield {
         progress,
@@ -115,139 +309,346 @@ export class CodebaseIndexer {
       };
     }
 
-    const indexesToBuild = await this.getIndexesToBuild();
-    let completedDirs = 0;
-    const totalRelativeExpectedTime = indexesToBuild.reduce(
-      (sum, index) => sum + index.relativeExpectedTime,
-      0,
-    );
-
     // Wait until Git Extension has loaded to report progress
     // so we don't appear stuck at 0% while waiting
-    await this.ide.getRepoName(workspaceDirs[0]);
+    await this.ide.getRepoName(dirs[0]);
 
     yield {
       progress,
       desc: "Starting indexing...",
       status: "loading",
     };
+    const beginTime = Date.now();
 
-    for (const directory of workspaceDirs) {
-      const files = await walkDir(directory, this.ide);
-      const stats = await this.ide.getLastModified(files);
+    for (const directory of dirs) {
+      const dirBasename = getUriPathBasename(directory);
+      yield {
+        progress,
+        desc: `Discovering files in ${dirBasename}...`,
+        status: "indexing",
+      };
+      const directoryFiles = [];
+      for await (const p of walkDirAsync(directory, this.ide, {
+        source: "codebase indexing: refresh dirs",
+      })) {
+        directoryFiles.push(p);
+        if (abortSignal.aborted) {
+          yield {
+            progress: 0,
+            desc: "Indexing cancelled",
+            status: "cancelled",
+          };
+          return;
+        }
+        if (this.pauseToken.paused) {
+          yield* this.yieldUpdateAndPause();
+        }
+      }
+
       const branch = await this.ide.getBranch(directory);
       const repoName = await this.ide.getRepoName(directory);
-      let completedRelativeExpectedTime = 0;
+      let nextLogThreshold = 0;
 
-      for (const codebaseIndex of indexesToBuild) {
-        // TODO: IndexTag type should use repoName rather than directory
-        const tag: IndexTag = {
+      try {
+        for await (const updateDesc of this.indexFiles(
           directory,
+          directoryFiles,
           branch,
-          artifactId: codebaseIndex.artifactId,
-        };
-        const [results, lastUpdated, markComplete] = await getComputeDeleteAddRemove(
+          repoName,
+        )) {
+          // Handle pausing in this loop because it's the only one really taking time
+          if (abortSignal.aborted) {
+            yield {
+              progress: 0,
+              desc: "Indexing cancelled",
+              status: "cancelled",
+            };
+            return;
+          }
+          if (this.pauseToken.paused) {
+            yield* this.yieldUpdateAndPause();
+          }
+          yield updateDesc;
+          if (updateDesc.progress >= nextLogThreshold) {
+            // log progress every 2.5%
+            nextLogThreshold += 0.025;
+            this.logProgress(
+              beginTime,
+              Math.floor(directoryFiles.length * updateDesc.progress),
+              updateDesc.progress,
+            );
+          }
+        }
+      } catch (err) {
+        yield this.handleErrorAndGetProgressUpdate(err);
+        return;
+      }
+    }
+    yield {
+      progress: 1,
+      desc: "Indexing Complete",
+      status: "done",
+    };
+    this.logProgress(beginTime, 0, 1);
+  }
+
+  private handleErrorAndGetProgressUpdate(
+    err: unknown,
+  ): IndexingProgressUpdate {
+    console.log("error when indexing: ", err);
+    if (err instanceof Error) {
+      const cause = getRootCause(err);
+      if (cause instanceof LLMError) {
+        throw cause;
+      }
+      return this.errorToProgressUpdate(err);
+    }
+    return {
+      progress: 0,
+      desc: `Indexing failed: ${err}`,
+      status: "failed",
+      debugInfo: extractMinimalStackTraceInfo((err as any)?.stack),
+    };
+  }
+
+  private errorToProgressUpdate(err: Error): IndexingProgressUpdate {
+    const cause = getRootCause(err);
+    let errMsg: string = `${cause}`;
+    let shouldClearIndexes = false;
+
+    // Check if any of the error regexes match
+    for (const regexStr of this.errorsRegexesToClearIndexesOn) {
+      const regex = new RegExp(regexStr);
+      const match = err.message.match(regex);
+
+      if (match !== null) {
+        shouldClearIndexes = true;
+        break;
+      }
+    }
+
+    return {
+      progress: 0,
+      desc: errMsg,
+      status: "failed",
+      shouldClearIndexes,
+      debugInfo: extractMinimalStackTraceInfo(err.stack),
+    };
+  }
+
+  private logProgress(
+    beginTime: number,
+    completedFileCount: number,
+    progress: number,
+  ) {
+    const timeTaken = Date.now() - beginTime;
+    const seconds = Math.round(timeTaken / 1000);
+    const progressPercentage = (progress * 100).toFixed(1);
+    const filesPerSec = (completedFileCount / seconds).toFixed(2);
+    // console.debug(
+    //   `Indexing: ${progressPercentage}% complete, elapsed time: ${seconds}s, ${filesPerSec} file/sec`,
+    // );
+  }
+
+  private async *yieldUpdateAndPause(): AsyncGenerator<IndexingProgressUpdate> {
+    yield {
+      progress: 0,
+      desc: "Indexing Paused",
+      status: "paused",
+    };
+    while (this.pauseToken.paused) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  /*
+   * Enables the indexing operation to be completed in batches, this is important in large
+   * repositories where indexing can quickly use up all the memory available
+   */
+  private *batchRefreshIndexResults(
+    results: RefreshIndexResults,
+  ): Generator<RefreshIndexResults> {
+    let curPos = 0;
+    while (
+      curPos < results.compute.length ||
+      curPos < results.del.length ||
+      curPos < results.addTag.length ||
+      curPos < results.removeTag.length
+    ) {
+      yield {
+        compute: results.compute.slice(curPos, curPos + this.filesPerBatch),
+        del: results.del.slice(curPos, curPos + this.filesPerBatch),
+        addTag: results.addTag.slice(curPos, curPos + this.filesPerBatch),
+        removeTag: results.removeTag.slice(curPos, curPos + this.filesPerBatch),
+      };
+      curPos += this.filesPerBatch;
+    }
+  }
+
+  private async *indexFiles(
+    directory: string,
+    files: string[],
+    branch: string,
+    repoName: string | undefined,
+  ): AsyncGenerator<IndexingProgressUpdate> {
+    const stats = await this.ide.getFileStats(files);
+    const indexesToBuild = await this.getIndexesToBuild();
+    let completedIndexCount = 0;
+    let progress = 0;
+    for (const codebaseIndex of indexesToBuild) {
+      const tag: IndexTag = {
+        directory,
+        branch,
+        artifactId: codebaseIndex.artifactId,
+      };
+      yield {
+        progress: progress,
+        desc: `Planning changes for ${codebaseIndex.artifactId} index...`,
+        status: "indexing",
+      };
+      const [results, lastUpdated, markComplete] =
+        await getComputeDeleteAddRemove(
           tag,
           { ...stats },
           (filepath) => this.ide.readFile(filepath),
           repoName,
         );
+      const totalOps = this.totalIndexOps(results);
+      let completedOps = 0;
 
-        try {
-          for await (let {
-            progress: indexProgress,
-            desc,
-          } of codebaseIndex.update(tag, results, markComplete, repoName)) {
-            // Handle pausing in this loop because it's the only one really taking time
-            if (abortSignal.aborted) {
-              yield {
-                progress: 1,
-                desc: "Indexing cancelled",
-                status: "disabled",
-              };
-              return;
-            }
-
-            if (this.pauseToken.paused) {
-              yield {
-                progress,
-                desc: "Paused",
-                status: "paused",
-              };
-              while (this.pauseToken.paused) {
-                await new Promise((resolve) => setTimeout(resolve, 100));
-              }
-            }
-
-            progress =
-              (completedDirs +
-                (completedRelativeExpectedTime +
-                  Math.min(1.0, indexProgress) *
-                    codebaseIndex.relativeExpectedTime) /
-                  totalRelativeExpectedTime) /
-              workspaceDirs.length;
+      // Don't update if nothing to update. Some of the indices might do unnecessary setup work
+      if (totalOps > 0) {
+        for (const subResult of this.batchRefreshIndexResults(results)) {
+          for await (const { desc } of codebaseIndex.update(
+            tag,
+            subResult,
+            markComplete,
+            repoName,
+          )) {
             yield {
-              progress,
+              progress: progress,
               desc,
               status: "indexing",
             };
           }
-
-          lastUpdated.forEach((lastUpdated, path) => {
-            markComplete([lastUpdated], IndexResultType.UpdateLastUpdated);
-          });
-
-          completedRelativeExpectedTime += codebaseIndex.relativeExpectedTime;
-          yield {
-            progress:
-              (completedDirs +
-                completedRelativeExpectedTime / totalRelativeExpectedTime) /
-              workspaceDirs.length,
-            desc: "Completed indexing " + codebaseIndex.artifactId,
-            status: "indexing",
-          };
-        } catch (e: any) {
-          let errMsg = `${e}`;
-
-          const errorRegex =
-            /Invalid argument error: Values length (\d+) is less than the length \((\d+)\) multiplied by the value size \(\d+\)/;
-          const match = e.message.match(errorRegex);
-
-          if (match) {
-            const [_, valuesLength, expectedLength] = match;
-            errMsg = `Generated embedding had length ${valuesLength} but was expected to be ${expectedLength}. This may be solved by deleting ~/.continue/index and refreshing the window to re-index.`;
-          }
-
-          yield {
-            progress: 0,
-            desc: errMsg,
-            status: "failed",
-          };
-
-          console.warn(
-            `Error updating the ${codebaseIndex.artifactId} index: ${e}`,
-          );
-          return;
+          completedOps +=
+            subResult.compute.length +
+            subResult.del.length +
+            subResult.addTag.length +
+            subResult.removeTag.length;
+          progress =
+            (completedIndexCount + completedOps / totalOps) *
+            (1 / indexesToBuild.length);
         }
       }
 
-      completedDirs++;
-      progress = completedDirs / workspaceDirs.length;
-      yield {
-        progress,
-        desc: "Indexing Complete",
-        status: "done",
-      };
+      await markComplete(lastUpdated, IndexResultType.UpdateLastUpdated);
+      completedIndexCount += 1;
     }
   }
 
-  private async getWorkspaceDir(filepath: string): Promise<string | undefined> {
-    const workspaceDirs = await this.ide.getWorkspaceDirs();
-    for (const workspaceDir of workspaceDirs) {
-      if (filepath.startsWith(workspaceDir)) {
-        return workspaceDir;
-      }
+  // New methods using messenger directly
+
+  private async updateProgress(update: IndexingProgressUpdate) {
+    this.codebaseIndexingState = update;
+    if (this.messenger) {
+      await this.messenger.request("indexProgress", update);
     }
-    return undefined;
+  }
+
+  private async sendIndexingErrorTelemetry(update: IndexingProgressUpdate) {
+    console.debug(
+      "Indexing failed with error: ",
+      update.desc,
+      update.debugInfo,
+    );
+    void Telemetry.capture(
+      "indexing_error",
+      {
+        error: update.desc,
+        stack: update.debugInfo,
+      },
+      false,
+    );
+  }
+
+  public async refreshCodebaseIndex(paths: string[]) {
+    if (this.indexingCancellationController) {
+      this.indexingCancellationController.abort();
+    }
+    this.indexingCancellationController = new AbortController();
+    try {
+      for await (const update of this.refreshDirs(
+        paths,
+        this.indexingCancellationController.signal,
+      )) {
+        await this.updateProgress(update);
+
+        if (update.status === "failed") {
+          await this.sendIndexingErrorTelemetry(update);
+        }
+      }
+    } catch (e: any) {
+      console.log(`Failed refreshing codebase index directories: ${e}`);
+      await this.handleIndexingError(e);
+    }
+
+    // Directly refresh submenu items
+    if (this.messenger) {
+      this.messenger.send("refreshSubmenuItems", {
+        providers: "dependsOnIndexing",
+      });
+    }
+    this.indexingCancellationController = undefined;
+  }
+
+  public async refreshCodebaseIndexFiles(files: string[]) {
+    // Can be cancelled by codebase index but not vice versa
+    if (
+      this.indexingCancellationController &&
+      !this.indexingCancellationController.signal.aborted
+    ) {
+      return;
+    }
+    this.indexingCancellationController = new AbortController();
+    try {
+      for await (const update of this.refreshFiles(files)) {
+        await this.updateProgress(update);
+
+        if (update.status === "failed") {
+          await this.sendIndexingErrorTelemetry(update);
+        }
+      }
+    } catch (e: any) {
+      console.log(`Failed refreshing codebase index files: ${e}`);
+      await this.handleIndexingError(e);
+    }
+
+    // Directly refresh submenu items
+    if (this.messenger) {
+      this.messenger.send("refreshSubmenuItems", { providers: "all" });
+    }
+    this.indexingCancellationController = undefined;
+  }
+
+  public async handleIndexingError(e: any) {
+    if (e instanceof LLMError && this.messenger) {
+      // Need to report this specific error to the IDE for special handling
+      await this.messenger.request("reportError", e);
+    }
+
+    // broadcast indexing error
+    const updateToSend: IndexingProgressUpdate = {
+      progress: 0,
+      status: "failed",
+      desc: e.message,
+    };
+
+    await this.updateProgress(updateToSend);
+    void this.sendIndexingErrorTelemetry(updateToSend);
+  }
+
+  public get currentIndexingState(): IndexingProgressUpdate {
+    return this.codebaseIndexingState;
   }
 }

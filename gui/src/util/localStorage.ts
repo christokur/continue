@@ -1,23 +1,26 @@
 import { JSONContent } from "@tiptap/react";
-import { IndexingProgressUpdate } from "core";
-import { OnboardingStatus } from "../pages/onboarding/utils";
+import { OnboardingStatus } from "../components/OnboardingCard";
 
 type LocalStorageTypes = {
+  isExploreDialogOpen: boolean;
+  hasDismissedExploreDialog: boolean;
   onboardingStatus?: OnboardingStatus;
+  hasDismissedOnboardingCard: boolean;
   mainTextEntryCounter: number;
   ide: "vscode" | "jetbrains";
   ftc: number;
   fontSize: number;
-  lastSessionId: string | undefined;
-  inputHistory: JSONContent[];
+  [key: `inputHistory_${string}`]: JSONContent[];
   extensionVersion: string;
-  indexingState: IndexingProgressUpdate;
-  signedInToGh: boolean;
-  isOnboardingInProgress: boolean;
   showTutorialCard: boolean;
   shownProfilesIntroduction: boolean;
   disableIndexing: boolean;
 };
+
+export enum LocalStorageKey {
+  IsExploreDialogOpen = "isExploreDialogOpen",
+  HasDismissedExploreDialog = "hasDismissedExploreDialog",
+}
 
 export function getLocalStorage<T extends keyof LocalStorageTypes>(
   key: T,

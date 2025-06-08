@@ -1,38 +1,30 @@
-import { useDispatch } from "react-redux";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import Layout from "./components/Layout";
-import { SubmenuContextProvidersContext } from "./context/SubmenuContextProviders";
-import { VscThemeContext } from "./context/VscTheme";
-import useSetup from "./hooks/useSetup";
-import useSubmenuContextProviders from "./hooks/useSubmenuContextProviders";
-import { useVscTheme } from "./hooks/useVscTheme";
-import { AddNewModel, ConfigureProvider } from "./pages/AddNewModel";
+import { MainEditorProvider } from "./components/mainInput/TipTapEditor";
+import { SubmenuContextProvidersProvider } from "./context/SubmenuContextProviders";
+import { VscThemeProvider } from "./context/VscTheme";
+import ParallelListeners from "./hooks/ParallelListeners";
+import ConfigPage from "./pages/config";
 import ErrorPage from "./pages/error";
-import GUI from "./pages/gui";
-import { default as Help, default as HelpPage } from "./pages/help";
+import Chat from "./pages/gui";
 import History from "./pages/history";
-import MigrationPage from "./pages/migration";
-import MonacoPage from "./pages/monaco";
-import ApiKeyAutocompleteOnboarding from "./pages/onboarding/apiKeyAutocompleteOnboarding";
-import ApiKeysOnboarding from "./pages/onboarding/ApiKeysOnboarding";
-import LocalOnboarding from "./pages/onboarding/LocalOnboarding";
-import Onboarding from "./pages/onboarding/Onboarding";
-import SettingsPage from "./pages/settings";
 import Stats from "./pages/stats";
+import ThemePage from "./styles/ThemePage";
+import { ROUTES } from "./util/navigation";
 
 const router = createMemoryRouter([
   {
-    path: "/",
+    path: ROUTES.HOME,
     element: <Layout />,
     errorElement: <ErrorPage />,
     children: [
       {
         path: "/index.html",
-        element: <GUI />,
+        element: <Chat />,
       },
       {
-        path: "/",
-        element: <GUI />,
+        path: ROUTES.HOME,
+        element: <Chat />,
       },
       {
         path: "/history",
@@ -43,69 +35,31 @@ const router = createMemoryRouter([
         element: <Stats />,
       },
       {
-        path: "/help",
-        element: <Help />,
+        path: ROUTES.CONFIG,
+        element: <ConfigPage />,
       },
       {
-        path: "/settings",
-        element: <SettingsPage />,
-      },
-      {
-        path: "/addModel",
-        element: <AddNewModel />,
-      },
-      {
-        path: "/addModel/provider/:providerName",
-        element: <ConfigureProvider />,
-      },
-      {
-        path: "/help",
-        element: <HelpPage />,
-      },
-      {
-        path: "/monaco",
-        element: <MonacoPage />,
-      },
-      {
-        path: "/onboarding",
-        element: <Onboarding />,
-      },
-      {
-        path: "/localOnboarding",
-        element: <LocalOnboarding />,
-      },
-      {
-        path: "/migration",
-        element: <MigrationPage />,
-      },
-      {
-        path: "/apiKeysOnboarding",
-        element: <ApiKeysOnboarding />,
-      },
-      {
-        path: "/apiKeyAutocompleteOnboarding",
-        element: <ApiKeyAutocompleteOnboarding />,
+        path: ROUTES.THEME,
+        element: <ThemePage />,
       },
     ],
   },
 ]);
 
+/*
+  ParallelListeners prevents entire app from rerendering on any change in the listeners,
+  most of which interact with redux etc.
+*/
 function App() {
-  const dispatch = useDispatch();
-
-  useSetup(dispatch);
-
-  const vscTheme = useVscTheme();
-  const submenuContextProvidersMethods = useSubmenuContextProviders();
-
   return (
-    <VscThemeContext.Provider value={vscTheme}>
-      <SubmenuContextProvidersContext.Provider
-        value={submenuContextProvidersMethods}
-      >
-        <RouterProvider router={router} />
-      </SubmenuContextProvidersContext.Provider>
-    </VscThemeContext.Provider>
+    <VscThemeProvider>
+      <MainEditorProvider>
+        <SubmenuContextProvidersProvider>
+          <RouterProvider router={router} />
+        </SubmenuContextProvidersProvider>
+      </MainEditorProvider>
+      <ParallelListeners />
+    </VscThemeProvider>
   );
 }
 

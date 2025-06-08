@@ -1,10 +1,15 @@
-async function* toAsyncIterable(nodeReadable: NodeJS.ReadableStream): AsyncGenerator<Uint8Array> {
+export async function* toAsyncIterable(
+  nodeReadable: NodeJS.ReadableStream,
+): AsyncGenerator<Uint8Array> {
   for await (const chunk of nodeReadable) {
+    // @ts-ignore
     yield chunk as Uint8Array;
   }
 }
 
-export async function* streamResponse(response: Response): AsyncGenerator<string> {
+export async function* streamResponse(
+  response: Response,
+): AsyncGenerator<string> {
   if (response.status !== 200) {
     throw new Error(await response.text());
   }
@@ -19,7 +24,9 @@ export async function* streamResponse(response: Response): AsyncGenerator<string
   if (nodeMajorVersion >= 20) {
     // Use the new API for Node 20 and above
     const stream = (ReadableStream as any).from(response.body);
-    for await (const chunk of stream.pipeThrough(new TextDecoderStream("utf-8"))) {
+    for await (const chunk of stream.pipeThrough(
+      new TextDecoderStream("utf-8"),
+    )) {
       yield chunk;
     }
   } else {
@@ -51,7 +58,7 @@ function parseDataLine(line: string): any {
 }
 
 function parseSseLine(line: string): { done: boolean; data: any } {
-  if (line.startsWith("data: [DONE]")) {
+  if (line.startsWith("data:[DONE]") || line.startsWith("data: [DONE]")) {
     return { done: true, data: undefined };
   }
   if (line.startsWith("data:")) {

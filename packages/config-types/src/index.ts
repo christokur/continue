@@ -11,7 +11,9 @@ export const completionOptionsSchema = z.object({
   stop: z.array(z.string()).optional(),
   maxTokens: z.number().optional(),
   numThreads: z.number().optional(),
+  useMmap: z.boolean().optional(),
   keepAlive: z.number().optional(),
+  numGpu: z.number().optional(),
   raw: z.boolean().optional(),
   stream: z.boolean().optional(),
 });
@@ -51,9 +53,14 @@ export const modelDescriptionSchema = z.object({
     "gemini",
     "mistral",
     "bedrock",
+    "sagemaker",
     "cloudflare",
     "azure",
+    "ovhcloud",
     "continue-proxy",
+    "nebius",
+    "scaleway",
+    "watsonx",
   ]),
   model: z.string(),
   apiKey: z.string().optional(),
@@ -102,14 +109,17 @@ export const embeddingsProviderSchema = z.object({
     "ollama",
     "openai",
     "cohere",
-    "free-trial",
     "gemini",
+    "ovhcloud",
     "continue-proxy",
+    "nebius",
+    "scaleway",
+    "watsonx",
   ]),
   apiBase: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),
-  engine: z.string().optional(),
+  deployment: z.string().optional(),
   apiType: z.string().optional(),
   apiVersion: z.string().optional(),
   requestOptions: requestOptionsSchema.optional(),
@@ -120,28 +130,25 @@ export const uiOptionsSchema = z.object({
   codeBlockToolbarPosition: z.enum(["top", "bottom"]).optional(),
   fontSize: z.number().optional(),
   displayRawMarkdown: z.boolean().optional(),
+  showChatScrollbar: z.boolean().optional(),
+  codeWrap: z.boolean().optional(),
 });
 export type UiOptions = z.infer<typeof uiOptionsSchema>;
 
 export const tabAutocompleteOptionsSchema = z.object({
   disable: z.boolean(),
-  useCopyBuffer: z.boolean(),
-  useSuffix: z.boolean(),
   maxPromptTokens: z.number(),
   debounceDelay: z.number(),
   maxSuffixPercentage: z.number(),
   prefixPercentage: z.number(),
+  transform: z.boolean().optional(),
   template: z.string().optional(),
   multilineCompletions: z.enum(["always", "never", "auto"]),
   slidingWindowPrefixPercentage: z.number(),
   slidingWindowSize: z.number(),
-  maxSnippetPercentage: z.number(),
-  recentlyEditedSimilarityThreshold: z.number(),
   useCache: z.boolean(),
   onlyMyCode: z.boolean(),
-  useOtherFiles: z.boolean(),
   useRecentlyEdited: z.boolean(),
-  recentLinePrefixMatchMinLength: z.number(),
   disableInFiles: z.array(z.string()).optional(),
   useImports: z.boolean().optional(),
 });
@@ -170,7 +177,7 @@ export const contextProviderSchema = z.object({
 export type ContextProvider = z.infer<typeof contextProviderSchema>;
 
 export const rerankerSchema = z.object({
-  name: z.enum(["cohere", "voyage", "llm", "continue-proxy"]),
+  name: z.enum(["cohere", "voyage", "watsonx", "llm", "continue-proxy"]),
   params: z.record(z.any()).optional(),
 });
 export type Reranker = z.infer<typeof rerankerSchema>;
@@ -198,10 +205,16 @@ export type DevData = z.infer<typeof devDataSchema>;
 
 export const siteIndexingConfigSchema = z.object({
   startUrl: z.string(),
-  rootUrl: z.string(),
+  // rootUrl: z.string(),
   title: z.string(),
   maxDepth: z.string().optional(),
   faviconUrl: z.string().optional(),
+  useLocalCrawling: z.boolean().optional(),
+});
+
+export const controlPlaneConfigSchema = z.object({
+  useContinueForTeamsProxy: z.boolean().optional(),
+  proxyUrl: z.string().optional(),
 });
 
 export const configJsonSchema = z.object({
@@ -222,5 +235,6 @@ export const configJsonSchema = z.object({
   tabAutocompleteOptions: tabAutocompleteOptionsSchema.optional(),
   ui: uiOptionsSchema.optional(),
   docs: z.array(siteIndexingConfigSchema).optional(),
+  controlPlane: controlPlaneConfigSchema.optional(),
 });
 export type ConfigJson = z.infer<typeof configJsonSchema>;

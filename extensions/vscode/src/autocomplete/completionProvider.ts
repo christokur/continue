@@ -1,15 +1,23 @@
-import type { IDE } from "core";
+import { CompletionProvider } from "core/autocomplete/CompletionProvider";
+import { processSingleLineCompletion } from "core/autocomplete/util/processSingleLineCompletion";
 import {
-  AutocompleteOutcome,
-  CompletionProvider,
   type AutocompleteInput,
-} from "core/autocomplete/completionProvider";
+  type AutocompleteOutcome,
+} from "core/autocomplete/util/types";
 import { ConfigHandler } from "core/config/ConfigHandler";
+import { IS_NEXT_EDIT_ACTIVE } from "core/nextEdit/constants";
+import { NextEditProvider } from "core/nextEdit/NextEditProvider";
+import * as URI from "uri-js";
 import { v4 as uuidv4 } from "uuid";
 import * as vscode from "vscode";
-import type { TabAutocompleteModel } from "../util/loadAutocompleteModel";
+
+import { handleLLMError } from "../util/errorHandling";
+import { VsCodeIde } from "../VsCodeIde";
+import { VsCodeWebviewProtocol } from "../webviewProtocol";
+
 import { getDefinitionsFromLsp } from "./lsp";
 import { RecentlyEditedTracker } from "./recentlyEdited";
+import { RecentlyVisitedRangesService } from "./RecentlyVisitedRangesService";
 import {
   StatusBarStatus,
   getStatusBarStatus,
@@ -26,50 +34,65 @@ interface VsCodeCompletionInput {
 export class ContinueCompletionProvider
   implements vscode.InlineCompletionItemProvider
 {
-  private onError(e: any) {
-    const options = ["Documentation"];
-    if (e.message.includes("https://ollama.ai")) {
-      options.push("Download Ollama");
+  private async onError(e: unknown) {
+    if (await handleLLMError(e)) {
+      return;
     }
-    vscode.window.showErrorMessage(e.message, ...options).then((val) => {
+    let message = "Continue Autocomplete Error";
+    if (e instanceof Error) {
+      message += `: ${e.message}`;
+    }
+    vscode.window.showErrorMessage(message, "Documentation").then((val) => {
       if (val === "Documentation") {
         vscode.env.openExternal(
           vscode.Uri.parse(
             "https://docs.continue.dev/features/tab-autocomplete",
           ),
         );
-      } else if (val === "Download Ollama") {
-        vscode.env.openExternal(vscode.Uri.parse("https://ollama.ai"));
       }
     });
   }
 
   private completionProvider: CompletionProvider;
-  private recentlyEditedTracker = new RecentlyEditedTracker();
+  private nextEditProvider: NextEditProvider | undefined;
+  private recentlyVisitedRanges: RecentlyVisitedRangesService;
+  private recentlyEditedTracker: RecentlyEditedTracker;
 
   constructor(
     private readonly configHandler: ConfigHandler,
-    private readonly ide: IDE,
-    private readonly tabAutocompleteModel: TabAutocompleteModel,
+    private readonly ide: VsCodeIde,
+    private readonly webviewProtocol: VsCodeWebviewProtocol,
   ) {
+    this.recentlyEditedTracker = new RecentlyEditedTracker(ide.ideUtils);
+
+    async function getAutocompleteModel() {
+      const { config } = await configHandler.loadConfig();
+      if (!config) {
+        return;
+      }
+      return config.selectedModelByRole.autocomplete ?? undefined;
+    }
     this.completionProvider = new CompletionProvider(
       this.configHandler,
       this.ide,
-      this.tabAutocompleteModel.get.bind(this.tabAutocompleteModel),
+      getAutocompleteModel,
       this.onError.bind(this),
       getDefinitionsFromLsp,
     );
-
-    vscode.workspace.onDidChangeTextDocument((event) => {
-      if (event.document.uri.fsPath === this._lastShownCompletion?.filepath) {
-        // console.log("updating completion");
-      }
-    });
+    // NOTE: Only turn it on locally when testing (for review purposes).
+    if (IS_NEXT_EDIT_ACTIVE) {
+      this.nextEditProvider = new NextEditProvider(
+        this.configHandler,
+        this.ide,
+        getAutocompleteModel,
+        this.onError.bind(this),
+        getDefinitionsFromLsp,
+      );
+    }
+    this.recentlyVisitedRanges = new RecentlyVisitedRangesService(ide);
   }
 
   _lastShownCompletion: AutocompleteOutcome | undefined;
-
-  _lastVsCodeCompletionInput: VsCodeCompletionInput | undefined;
 
   public async provideInlineCompletionItems(
     document: vscode.TextDocument,
@@ -84,63 +107,41 @@ export class ContinueCompletionProvider
       return null;
     }
 
-    // If the text at the range isn't a prefix of the intellisense text,
-    // no completion will be displayed, regardless of what we return
-    if (
-      context.selectedCompletionInfo &&
-      !context.selectedCompletionInfo.text.startsWith(
-        document.getText(context.selectedCompletionInfo.range),
-      )
-    ) {
+    if (document.uri.scheme === "vscode-scm") {
       return null;
     }
 
-    let injectDetails: string | undefined = undefined;
-    // Here we could use the details from the intellisense dropdown
-    // and place them just above the line being typed but because
-    // we don't have control over the formatting of the details and
-    // they could be especially long, not doing this for now
-    // if (context.selectedCompletionInfo) {
-    //   const results: any = await vscode.commands.executeCommand(
-    //     "vscode.executeCompletionItemProvider",
-    //     document.uri,
-    //     position,
-    //     null,
-    //     1,
-    //   );
-    //   if (results?.items) {
-    //     injectDetails = results.items?.[0]?.detail;
-    //     // const label = results?.items?.[0].label;
-    //     // const workspaceSymbols = (
-    //     //   (await vscode.commands.executeCommand(
-    //     //     "vscode.executeWorkspaceSymbolProvider",
-    //     //     label,
-    //     //   )) as any
-    //     // ).filter((symbol: any) => symbol.name === label);
-    //     // console.log(label, "=>", workspaceSymbols);
-    //   }
-    // }
+    // Don't autocomplete with multi-cursor
+    const editor = vscode.window.activeTextEditor;
+    if (editor && editor.selections.length > 1) {
+      return null;
+    }
 
-    // The first time intellisense dropdown shows up, and the first choice is selected,
-    // we should not consider this. Only once user explicitly moves down the list
-    const newVsCodeInput = {
-      context,
-      document,
-      position,
-    };
     const selectedCompletionInfo = context.selectedCompletionInfo;
-    this._lastVsCodeCompletionInput = newVsCodeInput;
+
+    // This code checks if there is a selected completion suggestion in the given context and ensures that it is valid
+    // To improve the accuracy of suggestions it checks if the user has typed at least 4 characters
+    // This helps refine and filter out irrelevant autocomplete options
+    if (selectedCompletionInfo) {
+      const { text, range } = selectedCompletionInfo;
+      const typedText = document.getText(range);
+
+      const typedLength = range.end.character - range.start.character;
+
+      if (typedLength < 4) {
+        return null;
+      }
+
+      if (!text.startsWith(typedText)) {
+        return null;
+      }
+    }
+    let injectDetails: string | undefined = undefined;
 
     try {
       const abortController = new AbortController();
       const signal = abortController.signal;
       token.onCancellationRequested(() => abortController.abort());
-
-      const config = await this.configHandler.loadConfig();
-      let clipboardText = "";
-      if (config.tabAutocompleteOptions?.useCopyBuffer === true) {
-        clipboardText = await vscode.env.clipboard.readText();
-      }
 
       // Handle notebook cells
       const pos = {
@@ -152,7 +153,9 @@ export class ContinueCompletionProvider
         const notebook = vscode.workspace.notebookDocuments.find((notebook) =>
           notebook
             .getCells()
-            .some((cell) => cell.document.uri === document.uri),
+            .some((cell) =>
+              URI.equal(cell.document.uri.toString(), document.uri.toString()),
+            ),
         );
         if (notebook) {
           const cells = notebook.getCells();
@@ -167,7 +170,9 @@ export class ContinueCompletionProvider
             })
             .join("\n\n");
           for (const cell of cells) {
-            if (cell.document.uri === document.uri) {
+            if (
+              URI.equal(cell.document.uri.toString(), document.uri.toString())
+            ) {
               break;
             } else {
               pos.line += cell.document.getText().split("\n").length + 1;
@@ -175,27 +180,27 @@ export class ContinueCompletionProvider
           }
         }
       }
-      // Handle commit message input box
-      let manuallyPassPrefix: string | undefined = undefined;
-      if (document.uri.scheme === "vscode-scm") {
-        return null;
-        // let diff = await this.ide.getDiff();
-        // diff = diff.split("\n").splice(-150).join("\n");
-        // manuallyPassPrefix = `${diff}\n\nCommit message: `;
+
+      // Manually pass file contents for unsaved, untitled files
+      if (document.isUntitled) {
+        manuallyPassFileContents = document.getText();
       }
 
+      // Handle commit message input box
+      let manuallyPassPrefix: string | undefined = undefined;
+
       const input: AutocompleteInput = {
-        completionId: uuidv4(),
-        filepath: document.uri.fsPath,
         pos,
-        recentlyEditedFiles: [],
-        recentlyEditedRanges:
-          await this.recentlyEditedTracker.getRecentlyEditedRanges(),
-        clipboardText: clipboardText,
         manuallyPassFileContents,
         manuallyPassPrefix,
         selectedCompletionInfo,
         injectDetails,
+        isUntitledFile: document.isUntitled,
+        completionId: uuidv4(),
+        filepath: document.uri.toString(),
+        recentlyVisitedRanges: this.recentlyVisitedRanges.getSnippets(),
+        recentlyEditedRanges:
+          await this.recentlyEditedTracker.getRecentlyEditedRanges(),
       };
 
       setupStatusBar(undefined, true);
@@ -207,6 +212,20 @@ export class ContinueCompletionProvider
 
       if (!outcome || !outcome.completion) {
         return null;
+      }
+
+      // NOTE: This is a very rudimentary check to see if we can call the next edit service.
+      // In the future we will have to figure out how to call this more gracefully.
+      if (this.nextEditProvider) {
+        const nextEditOutcome =
+          await this.nextEditProvider?.provideInlineCompletionItems(
+            input,
+            signal,
+          );
+
+        if (nextEditOutcome && nextEditOutcome.completion) {
+          outcome.completion = nextEditOutcome.completion;
+        }
       }
 
       // VS Code displays dependent on selectedCompletionInfo (their docstring below)
@@ -241,13 +260,41 @@ export class ContinueCompletionProvider
 
       // Construct the range/text to show
       const startPos = selectedCompletionInfo?.range.start ?? position;
-      const completionRange = new vscode.Range(
-        startPos,
-        startPos.translate(0, outcome.completion.length),
-      );
+      let range = new vscode.Range(startPos, startPos);
+      let completionText = outcome.completion;
+      const isSingleLineCompletion = outcome.completion.split("\n").length <= 1;
+
+      if (isSingleLineCompletion) {
+        const lastLineOfCompletionText = completionText.split("\n").pop() || "";
+        const currentText = document
+          .lineAt(startPos)
+          .text.substring(startPos.character);
+
+        const result = processSingleLineCompletion(
+          lastLineOfCompletionText,
+          currentText,
+          startPos.character,
+        );
+
+        if (result === undefined) {
+          return undefined;
+        }
+
+        completionText = result.completionText;
+        if (result.range) {
+          range = new vscode.Range(
+            new vscode.Position(startPos.line, result.range.start),
+            new vscode.Position(startPos.line, result.range.end),
+          );
+        }
+      } else {
+        // Extend the range to the end of the line for multiline completions
+        range = new vscode.Range(startPos, document.lineAt(startPos).range.end);
+      }
+
       const completionItem = new vscode.InlineCompletionItem(
-        outcome.completion,
-        completionRange,
+        completionText,
+        range,
         {
           title: "Log Autocomplete Outcome",
           command: "continue.logAutocompleteOutcome",

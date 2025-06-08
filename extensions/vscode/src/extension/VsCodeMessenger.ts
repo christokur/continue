@@ -1,4 +1,6 @@
 import { ConfigHandler } from "core/config/ConfigHandler";
+import { DataLogger } from "core/data/log";
+import { EDIT_MODE_STREAM_ID } from "core/edit/constants";
 import {
   FromCoreProtocol,
   FromWebviewProtocol,
@@ -7,31 +9,35 @@ import {
 import { ToWebviewFromCoreProtocol } from "core/protocol/coreWebview";
 import { ToIdeFromWebviewOrCoreProtocol } from "core/protocol/ide";
 import { ToIdeFromCoreProtocol } from "core/protocol/ideCore";
+import { InProcessMessenger, Message } from "core/protocol/messenger";
 import {
   CORE_TO_WEBVIEW_PASS_THROUGH,
   WEBVIEW_TO_CORE_PASS_THROUGH,
 } from "core/protocol/passThrough";
-import { InProcessMessenger, Message } from "core/util/messenger";
-import { getConfigJsonPath } from "core/util/paths";
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { stripImages } from "core/util/messageContent";
 import * as vscode from "vscode";
-import { VerticalPerLineDiffManager } from "../diff/verticalPerLine/manager";
-import { VsCodeIde } from "../ideProtocol";
+
+import { ApplyManager } from "../apply";
+import { VerticalDiffManager } from "../diff/vertical/manager";
+import { addCurrentSelectionToEdit } from "../quickEdit/AddCurrentSelection";
+import EditDecorationManager from "../quickEdit/EditDecorationManager";
 import {
   getControlPlaneSessionInfo,
   WorkOsAuthProvider,
 } from "../stubs/WorkOsAuthProvider";
+import { handleLLMError } from "../util/errorHandling";
+import { showTutorial } from "../util/tutorial";
 import { getExtensionUri } from "../util/vscode";
+import { VsCodeIde } from "../VsCodeIde";
 import { VsCodeWebviewProtocol } from "../webviewProtocol";
+
+type ToIdeOrWebviewFromCoreProtocol = ToIdeFromCoreProtocol &
+  ToWebviewFromCoreProtocol;
 
 /**
  * A shared messenger class between Core and Webview
  * so we don't have to rewrite some of the handlers
  */
-type TODO = any;
-type ToIdeOrWebviewFromCoreProtocol = ToIdeFromCoreProtocol &
-  ToWebviewFromCoreProtocol;
 export class VsCodeMessenger {
   onWebview<T extends keyof FromWebviewProtocol>(
     messageType: T,
@@ -39,7 +45,7 @@ export class VsCodeMessenger {
       message: Message<FromWebviewProtocol[T][0]>,
     ) => Promise<FromWebviewProtocol[T][1]> | FromWebviewProtocol[T][1],
   ): void {
-    this.webviewProtocol.on(messageType, handler);
+    void this.webviewProtocol.on(messageType, handler);
   }
 
   onCore<T extends keyof ToIdeOrWebviewFromCoreProtocol>(
@@ -72,31 +78,28 @@ export class VsCodeMessenger {
     >,
     private readonly webviewProtocol: VsCodeWebviewProtocol,
     private readonly ide: VsCodeIde,
-    private readonly verticalDiffManagerPromise: Promise<VerticalPerLineDiffManager>,
+    private readonly verticalDiffManagerPromise: Promise<VerticalDiffManager>,
     private readonly configHandlerPromise: Promise<ConfigHandler>,
     private readonly workOsAuthProvider: WorkOsAuthProvider,
+    private readonly editDecorationManager: EditDecorationManager,
   ) {
     /** WEBVIEW ONLY LISTENERS **/
     this.onWebview("showFile", (msg) => {
       this.ide.openFile(msg.data.filepath);
     });
-    this.onWebview("openConfigJson", (msg) => {
-      this.ide.openFile(getConfigJsonPath());
-    });
-    this.onWebview("readRangeInFile", async (msg) => {
-      return await vscode.workspace
-        .openTextDocument(msg.data.filepath)
-        .then((document) => {
-          const start = new vscode.Position(0, 0);
-          const end = new vscode.Position(5, 0);
-          const range = new vscode.Range(start, end);
 
-          const contents = document.getText(range);
-          return contents;
-        });
+    this.onWebview("vscode/openMoveRightMarkdown", (msg) => {
+      vscode.commands.executeCommand(
+        "markdown.showPreview",
+        vscode.Uri.joinPath(
+          getExtensionUri(),
+          "media",
+          "move-chat-panel-right.md",
+        ),
+      );
     });
+
     this.onWebview("toggleDevTools", (msg) => {
-      vscode.commands.executeCommand("workbench.action.toggleDevTools");
       vscode.commands.executeCommand("continue.viewLogs");
     });
     this.onWebview("reloadWindow", (msg) => {
@@ -108,76 +111,73 @@ export class VsCodeMessenger {
     this.onWebview("toggleFullScreen", (msg) => {
       vscode.commands.executeCommand("continue.toggleFullScreen");
     });
-    // History
-    this.onWebview("saveFile", async (msg) => {
-      return await ide.saveFile(msg.data.filepath);
-    });
-    this.onWebview("readFile", async (msg) => {
-      return await ide.readFile(msg.data.filepath);
-    });
-    this.onWebview("showDiff", async (msg) => {
-      return await ide.showDiff(
-        msg.data.filepath,
-        msg.data.newContents,
-        msg.data.stepIndex,
+
+    this.onWebview("acceptDiff", async ({ data: { filepath, streamId } }) => {
+      await vscode.commands.executeCommand(
+        "continue.acceptDiff",
+        filepath,
+        streamId,
       );
     });
 
-    this.onWebview("applyToCurrentFile", async (msg) => {
-      // Select the entire current file
-      const editor = vscode.window.activeTextEditor;
+    this.onWebview("rejectDiff", async ({ data: { filepath, streamId } }) => {
+      await vscode.commands.executeCommand(
+        "continue.rejectDiff",
+        filepath,
+        streamId,
+      );
+    });
 
-      if (!editor) {
-        vscode.window.showErrorMessage("No active editor to apply edits to");
-        return;
-      }
+    this.onWebview("applyToFile", async ({ data }) => {
+      const [verticalDiffManager, configHandler] = await Promise.all([
+        verticalDiffManagerPromise,
+        configHandlerPromise,
+      ]);
 
-      if (editor.selection.isEmpty) {
-        const document = editor.document;
-        const start = new vscode.Position(0, 0);
-        const end = new vscode.Position(
-          document.lineCount - 1,
-          document.lineAt(document.lineCount - 1).text.length,
-        );
-        editor.selection = new vscode.Selection(start, end);
-      }
+      const applyManager = new ApplyManager(
+        this.ide,
+        webviewProtocol,
+        verticalDiffManager,
+        configHandler,
+      );
 
-      const verticalDiffManager = await this.verticalDiffManagerPromise;
-      const prompt = `The following code was suggested as an edit:\n\`\`\`\n${msg.data.text}\n\`\`\`\nPlease apply it to the previous code.`;
-
-      const configHandler = await configHandlerPromise;
-      const config = await configHandler.loadConfig();
-
-      const modelTitle =
-        config.experimental?.modelRoles?.applyCodeBlock ??
-        (await this.webviewProtocol.request("getDefaultModelTitle", undefined));
-
-      verticalDiffManager.streamEdit(prompt, modelTitle);
+      await applyManager.applyToFile(data);
     });
 
     this.onWebview("showTutorial", async (msg) => {
-      const tutorialPath = path.join(
-        getExtensionUri().fsPath,
-        "continue_tutorial.py",
-      );
-      // Ensure keyboard shortcuts match OS
-      if (process.platform !== "darwin") {
-        let tutorialContent = fs.readFileSync(tutorialPath, "utf8");
-        tutorialContent = tutorialContent
-          .replace("⌘", "^")
-          .replace("Cmd", "Ctrl");
-        fs.writeFileSync(tutorialPath, tutorialContent);
-      }
-
-      const doc = await vscode.workspace.openTextDocument(
-        vscode.Uri.file(tutorialPath),
-      );
-      await vscode.window.showTextDocument(doc);
+      await showTutorial(this.ide);
     });
 
-    this.onWebview("openUrl", (msg) => {
-      vscode.env.openExternal(vscode.Uri.parse(msg.data));
-    });
+    this.onWebview(
+      "overwriteFile",
+      async ({ data: { prevFileContent, filepath } }) => {
+        if (prevFileContent === null) {
+          // TODO: Delete the file
+          return;
+        }
+
+        await this.ide.openFile(filepath);
+
+        // Get active text editor
+        const editor = vscode.window.activeTextEditor;
+
+        if (!editor) {
+          vscode.window.showErrorMessage("No active editor to apply edits to");
+          return;
+        }
+
+        editor.edit((builder) =>
+          builder.replace(
+            new vscode.Range(
+              editor.document.positionAt(0),
+              editor.document.positionAt(editor.document.getText().length),
+            ),
+            prevFileContent,
+          ),
+        );
+      },
+    );
+
     this.onWebview("insertAtCursor", async (msg) => {
       const editor = vscode.window.activeTextEditor;
       if (editor === undefined || !editor.selection) {
@@ -191,15 +191,72 @@ export class VsCodeMessenger {
         );
       });
     });
+    this.onWebview("edit/addCurrentSelection", async (msg) => {
+      const verticalDiffManager = await this.verticalDiffManagerPromise;
+      await addCurrentSelectionToEdit({
+        args: undefined,
+        editDecorationManager,
+        webviewProtocol: this.webviewProtocol,
+        verticalDiffManager,
+      });
+    });
+    this.onWebview("edit/sendPrompt", async (msg) => {
+      const prompt = msg.data.prompt;
+      const { start, end } = msg.data.range.range;
+      const verticalDiffManager = await verticalDiffManagerPromise;
+
+      const configHandler = await configHandlerPromise;
+      const { config } = await configHandler.loadConfig();
+
+      if (!config) {
+        throw new Error("Edit: Failed to load config");
+      }
+
+      const model =
+        config?.selectedModelByRole.edit ?? config?.selectedModelByRole.chat;
+
+      if (!model) {
+        throw new Error("No Edit or Chat model selected");
+      }
+
+      const fileAfterEdit = await verticalDiffManager.streamEdit({
+        input: stripImages(prompt),
+        llm: model,
+        streamId: EDIT_MODE_STREAM_ID,
+        range: new vscode.Range(
+          new vscode.Position(start.line, start.character),
+          new vscode.Position(end.line, end.character),
+        ),
+        rulesToInclude: config.rules,
+      });
+
+      // Log dev data
+      await DataLogger.getInstance().logDevData({
+        name: "editInteraction",
+        data: {
+          prompt: stripImages(prompt),
+          completion: fileAfterEdit ?? "",
+          modelProvider: model.underlyingProviderName,
+          modelTitle: model.title ?? "",
+          filepath: msg.data.range.filepath,
+        },
+      });
+
+      return fileAfterEdit;
+    });
+
+    this.onWebview("edit/clearDecorations", async (msg) => {
+      editDecorationManager.clear();
+    });
 
     /** PASS THROUGH FROM WEBVIEW TO CORE AND BACK **/
     WEBVIEW_TO_CORE_PASS_THROUGH.forEach((messageType) => {
       this.onWebview(messageType, async (msg) => {
-        return (await this.inProcessMessenger.externalRequest(
+        return await this.inProcessMessenger.externalRequest(
           messageType,
           msg.data,
           msg.messageId,
-        )) as TODO;
+        );
       });
     });
 
@@ -214,11 +271,24 @@ export class VsCodeMessenger {
     // None right now
 
     /** BOTH CORE AND WEBVIEW **/
+    this.onWebviewOrCore("readRangeInFile", async (msg) => {
+      return await vscode.workspace
+        .openTextDocument(msg.data.filepath)
+        .then((document) => {
+          const start = new vscode.Position(0, 0);
+          const end = new vscode.Position(5, 0);
+          const range = new vscode.Range(start, end);
+
+          const contents = document.getText(range);
+          return contents;
+        });
+    });
+
     this.onWebviewOrCore("getIdeSettings", async (msg) => {
       return ide.getIdeSettings();
     });
     this.onWebviewOrCore("getDiff", async (msg) => {
-      return ide.getDiff();
+      return ide.getDiff(msg.data.includeUnstaged);
     });
     this.onWebviewOrCore("getTerminalContents", async (msg) => {
       return ide.getTerminalContents();
@@ -238,17 +308,11 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("getWorkspaceDirs", async (msg) => {
       return ide.getWorkspaceDirs();
     });
-    this.onWebviewOrCore("listFolders", async (msg) => {
-      return ide.listFolders();
-    });
     this.onWebviewOrCore("writeFile", async (msg) => {
       return ide.writeFile(msg.data.path, msg.data.contents);
     });
     this.onWebviewOrCore("showVirtualFile", async (msg) => {
       return ide.showVirtualFile(msg.data.name, msg.data.content);
-    });
-    this.onWebviewOrCore("getContinueDir", async (msg) => {
-      return ide.getContinueDir();
     });
     this.onWebviewOrCore("openFile", async (msg) => {
       return ide.openFile(msg.data.path);
@@ -259,8 +323,11 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("getSearchResults", async (msg) => {
       return ide.getSearchResults(msg.data.query);
     });
+    this.onWebviewOrCore("getFileResults", async (msg) => {
+      return ide.getFileResults(msg.data.pattern);
+    });
     this.onWebviewOrCore("subprocess", async (msg) => {
-      return ide.subprocess(msg.data.command);
+      return ide.subprocess(msg.data.command, msg.data.cwd);
     });
     this.onWebviewOrCore("getProblems", async (msg) => {
       return ide.getProblems(msg.data.filepath);
@@ -282,30 +349,82 @@ export class VsCodeMessenger {
       const { filepath, startLine, endLine } = msg.data;
       return ide.showLines(filepath, startLine, endLine);
     });
-    // Other
-    this.onWebviewOrCore("errorPopup", (msg) => {
-      vscode.window
-        .showErrorMessage(msg.data.message, "Show Logs")
-        .then((selection) => {
-          if (selection === "Show Logs") {
-            vscode.commands.executeCommand("workbench.action.toggleDevTools");
-          }
-        });
+    this.onWebviewOrCore("showToast", (msg) => {
+      this.ide.showToast(...msg.data);
     });
-    this.onWebviewOrCore("infoPopup", (msg) => {
-      vscode.window.showInformationMessage(msg.data.message);
-    });
-    this.onWebviewOrCore("getGitHubAuthToken", (msg) =>
-      ide.getGitHubAuthToken(),
-    );
     this.onWebviewOrCore("getControlPlaneSessionInfo", async (msg) => {
-      return getControlPlaneSessionInfo(msg.data.silent);
+      return getControlPlaneSessionInfo(
+        msg.data.silent,
+        msg.data.useOnboarding,
+      );
     });
     this.onWebviewOrCore("logoutOfControlPlane", async (msg) => {
       const sessions = await this.workOsAuthProvider.getSessions();
       await Promise.all(
         sessions.map((session) => workOsAuthProvider.removeSession(session.id)),
       );
+      vscode.commands.executeCommand(
+        "setContext",
+        "continue.isSignedInToControlPlane",
+        false,
+      );
+    });
+    this.onWebviewOrCore("saveFile", async (msg) => {
+      return await ide.saveFile(msg.data.filepath);
+    });
+    this.onWebviewOrCore("readFile", async (msg) => {
+      return await ide.readFile(msg.data.filepath);
+    });
+    this.onWebviewOrCore("openUrl", (msg) => {
+      vscode.env.openExternal(vscode.Uri.parse(msg.data));
+    });
+
+    this.onWebviewOrCore("fileExists", async (msg) => {
+      return await ide.fileExists(msg.data.filepath);
+    });
+
+    this.onWebviewOrCore("gotoDefinition", async (msg) => {
+      return await ide.gotoDefinition(msg.data.location);
+    });
+
+    this.onWebviewOrCore("getFileStats", async (msg) => {
+      return await ide.getFileStats(msg.data.files);
+    });
+
+    this.onWebviewOrCore("getGitRootPath", async (msg) => {
+      return await ide.getGitRootPath(msg.data.dir);
+    });
+
+    this.onWebviewOrCore("listDir", async (msg) => {
+      return await ide.listDir(msg.data.dir);
+    });
+
+    this.onWebviewOrCore("getRepoName", async (msg) => {
+      return await ide.getRepoName(msg.data.dir);
+    });
+
+    this.onWebviewOrCore("getTags", async (msg) => {
+      return await ide.getTags(msg.data);
+    });
+
+    this.onWebviewOrCore("getIdeInfo", async (msg) => {
+      return await ide.getIdeInfo();
+    });
+
+    this.onWebviewOrCore("isTelemetryEnabled", async (msg) => {
+      return await ide.isTelemetryEnabled();
+    });
+
+    this.onWebviewOrCore("getWorkspaceConfigs", async (msg) => {
+      return await ide.getWorkspaceConfigs();
+    });
+
+    this.onWebviewOrCore("getUniqueId", async (msg) => {
+      return await ide.getUniqueId();
+    });
+
+    this.onWebviewOrCore("reportError", async (msg) => {
+      await handleLLMError(msg.data);
     });
   }
 }

@@ -1,6 +1,6 @@
 import { ChatMessage, SlashCommand } from "../../index.js";
-import { stripImages } from "../../llm/images.js";
 import { removeQuotesAndEscapes } from "../../util/index.js";
+import { renderChatMessage } from "../../util/messageContent.js";
 
 const PROMPT = (
   input: string,
@@ -31,7 +31,8 @@ const DraftIssueCommand: SlashCommand = {
     }
     let title = await llm.complete(
       `Generate a title for the GitHub issue requested in this user input: '${input}'. Use no more than 20 words and output nothing other than the title. Do not surround it with quotes. The title is: `,
-      { maxTokens: 20 },
+      new AbortController().signal,
+      { maxTokens: 30 },
     );
 
     title = `${removeQuotesAndEscapes(title.trim())}\n\n`;
@@ -39,13 +40,16 @@ const DraftIssueCommand: SlashCommand = {
 
     let body = "";
     const messages: ChatMessage[] = [
-      ...history,
+      ...history.filter((msg) => msg.role !== "system"),
       { role: "user", content: PROMPT(input, title) },
     ];
 
-    for await (const chunk of llm.streamChat(messages)) {
+    for await (const chunk of llm.streamChat(
+      messages,
+      new AbortController().signal,
+    )) {
       body += chunk.content;
-      yield stripImages(chunk.content);
+      yield renderChatMessage(chunk);
     }
 
     const url = `${params.repositoryUrl}/issues/new?title=${encodeURIComponent(

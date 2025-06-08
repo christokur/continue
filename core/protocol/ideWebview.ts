@@ -1,10 +1,38 @@
-import type { RangeInFileWithContents } from "../commands/util.js";
-import type { ContextSubmenuItem } from "../index.js";
-import { ToIdeFromWebviewOrCoreProtocol } from "./ide.js";
-import { ToWebviewFromIdeOrCoreProtocol } from "./webview.js";
+import { ToIdeFromWebviewOrCoreProtocol } from "./ide";
+import { ToWebviewFromIdeOrCoreProtocol } from "./webview";
+
+import {
+  AcceptOrRejectDiffPayload,
+  ApplyState,
+  HighlightedCodePayload,
+  MessageContent,
+  RangeInFileWithContents,
+  SetCodeToEditPayload,
+  ShowFilePayload,
+} from "../";
 
 export type ToIdeFromWebviewProtocol = ToIdeFromWebviewOrCoreProtocol & {
-  onLoad: [
+  openUrl: [string, void];
+  applyToFile: [
+    {
+      text: string;
+      streamId: string;
+      filepath?: string;
+      toolCallId?: string;
+    },
+    void,
+  ];
+  overwriteFile: [{ filepath: string; prevFileContent: string | null }, void];
+  showTutorial: [undefined, void];
+  showFile: [ShowFilePayload, void];
+  toggleDevTools: [undefined, void];
+  reloadWindow: [undefined, void];
+  focusEditor: [undefined, void];
+  toggleFullScreen: [{ newWindow?: boolean } | undefined, void];
+  insertAtCursor: [{ text: string }, void];
+  copyText: [{ text: string }, void];
+  "jetbrains/isOSREnabled": [undefined, boolean];
+  "jetbrains/onLoad": [
     undefined,
     {
       windowId: string;
@@ -14,50 +42,46 @@ export type ToIdeFromWebviewProtocol = ToIdeFromWebviewOrCoreProtocol & {
       vscMediaUrl: string;
     },
   ];
-  openUrl: [string, void];
-  applyToCurrentFile: [{ text: string }, void];
-  showTutorial: [undefined, void];
-  showFile: [{ filepath: string }, void];
-  openConfigJson: [undefined, void];
-  toggleDevTools: [undefined, void];
-  reloadWindow: [undefined, void];
-  focusEditor: [undefined, void];
-  toggleFullScreen: [undefined, void];
-  insertAtCursor: [{ text: string }, void];
-  copyText: [{ text: string }, void];
-  "jetbrains/editorInsetHeight": [{ height: number }, void];
-  setGitHubAuthToken: [{ token: string }, void];
+  "jetbrains/getColors": [undefined, Record<string, string | null | undefined>];
+  "vscode/openMoveRightMarkdown": [undefined, void];
+  acceptDiff: [AcceptOrRejectDiffPayload, void];
+  rejectDiff: [AcceptOrRejectDiffPayload, void];
+  "edit/sendPrompt": [
+    {
+      prompt: MessageContent;
+      range: RangeInFileWithContents;
+    },
+    string | undefined,
+  ];
+  "edit/addCurrentSelection": [undefined, void];
+  "edit/clearDecorations": [undefined, void];
 };
 
 export type ToWebviewFromIdeProtocol = ToWebviewFromIdeOrCoreProtocol & {
   setInactive: [undefined, void];
   submitMessage: [{ message: any }, void]; // any -> JSONContent from TipTap
-  updateSubmenuItems: [
-    { provider: string; submenuItems: ContextSubmenuItem[] },
-    void,
-  ];
   newSessionWithPrompt: [{ prompt: string }, void];
   userInput: [{ input: string }, void];
   focusContinueInput: [undefined, void];
   focusContinueInputWithoutClear: [undefined, void];
   focusContinueInputWithNewSession: [undefined, void];
-  highlightedCode: [
-    {
-      rangeInFileWithContents: RangeInFileWithContents;
-      prompt?: string;
-      shouldRun?: boolean;
-    },
-    void,
-  ];
+  highlightedCode: [HighlightedCodePayload, void];
+  setCodeToEdit: [SetCodeToEditPayload, void];
+  navigateTo: [{ path: string; toggle?: boolean }, void];
   addModel: [undefined, void];
-  openSettings: [undefined, void];
-  viewHistory: [undefined, void];
+
+  focusContinueSessionId: [{ sessionId: string | undefined }, void];
   newSession: [undefined, void];
   setTheme: [{ theme: any }, void];
   setColors: [{ [key: string]: string }, void];
   "jetbrains/editorInsetRefresh": [undefined, void];
+  "jetbrains/isOSREnabled": [boolean, void];
   addApiKey: [undefined, void];
-  setupLocalModel: [undefined, void];
+  setupLocalConfig: [undefined, void];
   incrementFtc: [undefined, void];
-  openOnboarding: [undefined, void];
+  openOnboardingCard: [undefined, void];
+  applyCodeFromChat: [undefined, void];
+  updateApplyState: [ApplyState, void];
+  exitEditMode: [undefined, void];
+  focusEdit: [undefined, void];
 };

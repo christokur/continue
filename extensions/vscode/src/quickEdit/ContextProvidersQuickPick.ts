@@ -1,5 +1,5 @@
+import { fetchwithRequestOptions } from "@continuedev/fetch";
 import { ContinueConfig, IDE } from "core";
-import { fetchwithRequestOptions } from "core/util/fetchWithOptions";
 import { QuickPickItem, window } from "vscode";
 
 export async function getContextProviderItems({
@@ -34,16 +34,16 @@ export async function getContextProvidersString(
             provider.description.displayTitle === selectedProvider.label,
         );
 
-        if (!provider) {
+        if (!provider || !config.selectedModelByRole.chat) {
           return [];
         }
 
         return provider.getContextItems("", {
           config,
           ide,
-          embeddingsProvider: config.embeddingsProvider,
-          reranker: config.reranker,
-          llm: config.models[0],
+          embeddingsProvider: config.selectedModelByRole.embed,
+          reranker: config.selectedModelByRole.rerank,
+          llm: config.selectedModelByRole.chat,
           fullInput: "",
           selectedCode: [],
           fetch: (url, init) =>
@@ -74,12 +74,12 @@ export async function getContextProviderQuickPickVal(
   const val = await new Promise<string>((resolve) => {
     quickPick.onDidAccept(async () => {
       const selectedItems = Array.from(quickPick.selectedItems);
-      const context = await getContextProvidersString(
-        selectedItems,
-        config,
-        ide,
-      );
-      resolve(context);
+      getContextProvidersString(selectedItems, config, ide)
+        .then(resolve)
+        .catch((e) => {
+          console.warn(`Fail to get context providers: ${e}`);
+          resolve("");
+        });
     });
   });
 

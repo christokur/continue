@@ -1,79 +1,53 @@
-"""
-_________               _____ _____                       
-__  ____/______ _______ __  /____(_)_______ ____  _______ 
-_  /     _  __ \__  __ \_  __/__  / __  __ \_  / / /_  _ \ 
-/ /___   / /_/ /_  / / // /_  _  /  _  / / // /_/ / /  __/
-\____/   \____/ /_/ /_/ \__/  /_/   /_/ /_/ \__,_/  \___/ 
+"""                    _________               _____ _____
+                       __  ____/______ _______ __  /____(_)_______ ____  _______
+                       _  /     _  __ \__  __ \_  __/__  / __  __ \_  / / /_  _ \
+                       / /___   / /_/ /_  / / // /_  _  /  _  / / // /_/ / /  __/
+                       \____/   \____/ /_/ /_/ \__/  /_/   /_/ /_/ \__,_/  \___/
 
-Welcome to Continue! This is a 2 minute tutorial.
-
-You can click the gray buttons, starting with "Highlight the function" to follow along.
+                                 Autocomplete, Edit, Chat, and Agent tutorial
 """
 
-# region —————————————————————————— Part 1: Ask a question about code [Cmd+L] ——————————————————————————
 
+# —————————————————————————————————————————————     Autocomplete     —————————————————————————————————————————————— #
+#                            Autocomplete provides inline code suggestions as you type.
 
-"""Step 1: Highlight the function below"""
+# 1. Place cursor after `sorting_algorithm:` below and press [Enter]
+# 2. Press [Tab] to accept the Autocomplete suggestion
 
+# Basic assertion for sorting_algorithm:
 
-def mysterious_function(x):
+# —————————————————————————————————————————————————     Edit      ————————————————————————————————————————————————— #
+#                   Edit is a convenient way to make quick changes to specific code and files.
+
+# 1. Highlight the code below
+# 2. Press [Cmd/Ctrl + I] to Edit
+# 3. Try asking Continue to "make this more readable"
+def sorting_algorithm(x):
     for i in range(len(x)):
         for j in range(len(x) - 1):
             if x[j] > x[j + 1]:
                 x[j], x[j + 1] = x[j + 1], x[j]
-
     return x
 
+# —————————————————————————————————————————————————     Chat      ————————————————————————————————————————————————— #
+#                    Chat makes it easy to ask for help from an LLM without needing to leave the IDE.
 
-"""Step 2: Use the keyboard shortcut [Cmd+L] to
-select the code and toggle the Continue input box"""
-
-"""Step 3: Ask a question and press Enter"""
-
-# endregion
-
-# region ————————————————————————————————— Part 2: Edit code [Cmd+I] —————————————————————————————————
-
-
-"""Step 1: Highlight this code"""
-
-
-def mysterious_function(x):
-    n = len(x)
-    for i in range(n):
-        swapped = False
-        for j in range(0, n - i - 1):
+# 1. Highlight the code below
+# 2. Press [Cmd/Ctrl + L] to add to Chat
+# 3. Try asking Continue "what sorting algorithm is this?"
+def sorting_algorithm2(x):
+    for i in range(len(x)):
+        for j in range(len(x) - 1):
             if x[j] > x[j + 1]:
                 x[j], x[j + 1] = x[j + 1], x[j]
-                swapped = True
-        if swapped == False:
-            break
     return x
 
+# —————————————————————————————————————————————————     Agent      ————————————————————————————————————————————————— #
+#           Agent equips the Chat model with the tools needed to handle a wide range of coding tasks, allowing
+#           the model to make decisions and save you the work of manually finding context and performing actions.
 
-"""Step 2: Use the keyboard shortcut [Cmd+I] to edit"""
+# 1. Switch from "Chat" to "Agent" mode using the dropdown in the bottom left of the input box
+# 2. Try asking Continue "Write unit tests for this code in a new file",
+#    or if you have Python installed, "Write unit tests for this code in a new file and run the test"
 
-"""Step 3: Type "<your edit request>" and press Enter"""
-
-"""Step 4: Use keyboard shortcuts to
-accept [Cmd+Shift+Enter] or reject [Cmd+Shift+Backspace] the edit"""
-
-# endregion
-
-# region ———————————————————————————— Part 3: Debug automatically [Cmd+Shift+R] ————————————————————————————
-
-
-"""Step 1: Run this Python file (it should error!)"""
-
-
-def print_sum(list_to_print):
-    print(sum(list_to_print))
-
-
-"""Step 2: Use the keyboard shortcut [Cmd+Shift+R]
-to automatically debug the error"""
-print_sum(["a", "b", "c"])
-
-# endregion
-
-# Ready to learn more? Check out the Continue documentation: https://docs.continue.dev
+# ——————————————————      Learn more at https://docs.continue.dev/getting-started/overview      ——————————————————— #

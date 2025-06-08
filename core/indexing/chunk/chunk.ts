@@ -1,6 +1,8 @@
 import { Chunk, ChunkWithoutID } from "../../index.js";
-import { countTokens, countTokensAsync } from "../../llm/countTokens.js";
+import { countTokensAsync } from "../../llm/countTokens.js";
 import { supportedLanguages } from "../../util/treeSitter.js";
+import { getUriFileExtension, getUriPathBasename } from "../../util/uri.js";
+
 import { basicChunker } from "./basic.js";
 import { codeChunker } from "./code.js";
 
@@ -12,24 +14,21 @@ export type ChunkDocumentParam = {
 };
 
 async function* chunkDocumentWithoutId(
-  filepath: string,
+  fileUri: string,
   contents: string,
   maxChunkSize: number,
 ): AsyncGenerator<ChunkWithoutID> {
   if (contents.trim() === "") {
     return;
   }
-
-  const segs = filepath.split(".");
-  const ext = segs[segs.length - 1];
-  if (ext in supportedLanguages) {
+  const extension = getUriFileExtension(fileUri);
+  if (extension in supportedLanguages) {
     try {
-      for await (const chunk of codeChunker(filepath, contents, maxChunkSize)) {
+      for await (const chunk of codeChunker(fileUri, contents, maxChunkSize)) {
         yield chunk;
       }
       return;
-    } catch (e) {
-      // console.error(`Failed to parse ${filepath}: `, e);
+    } catch (e: any) {
       // falls back to basicChunker
     }
   }
@@ -50,22 +49,24 @@ export async function* chunkDocument({
     contents,
     maxChunkSize,
   )) {
-    chunkPromises.push(new Promise(async (resolve) => {
-      if (await countTokensAsync(chunkWithoutId.content) > maxChunkSize) {
-        console.warn(
-          `Chunk with more than ${maxChunkSize} tokens constructed: `,
+    chunkPromises.push(
+      new Promise(async (resolve) => {
+        if ((await countTokensAsync(chunkWithoutId.content)) > maxChunkSize) {
+          // console.debug(
+          //   `Chunk with more than ${maxChunkSize} tokens constructed: `,
+          //   filepath,
+          //   countTokens(chunkWithoutId.content),
+          // );
+          return resolve(undefined);
+        }
+        resolve({
+          ...chunkWithoutId,
+          digest,
+          index,
           filepath,
-          countTokens(chunkWithoutId.content),
-        );
-        return resolve(undefined);
-      }
-      resolve({
-        ...chunkWithoutId,
-        digest,
-        index,
-        filepath,
-      });
-    }));
+        });
+      }),
+    );
     index++;
   }
   for await (const chunk of chunkPromises) {
@@ -74,4 +75,16 @@ export async function* chunkDocument({
     }
     yield chunk;
   }
+}
+
+export function shouldChunk(fileUri: string, contents: string): boolean {
+  if (contents.length > 1000000) {
+    // if a file has more than 1m characters then skip it
+    return false;
+  }
+  if (contents.length === 0) {
+    return false;
+  }
+  const baseName = getUriPathBasename(fileUri);
+  return baseName.includes(".");
 }

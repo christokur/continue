@@ -1,4 +1,9 @@
+import fs from "fs";
+
 import ignore from "ignore";
+
+import { IDE } from "..";
+import { getGlobalContinueIgnorePath } from "../util/paths";
 
 export const DEFAULT_IGNORE_FILETYPES = [
   "*.DS_Store",
@@ -59,12 +64,19 @@ export const DEFAULT_IGNORE_FILETYPES = [
   "*.gcda",
   "*.gcno",
   "go.sum",
-  ".env",
-  ".gitignore",
-  ".gitkeep",
-  ".continueignore",
+  "*.env",
+  "*.gitignore",
+  "*.gitkeep",
+  "*.continueignore",
   "config.json",
-  ".csv",
+  "config.yaml",
+  "*.csv",
+  "*.uasset",
+  "*.pdb",
+  "*.bin",
+  "*.pag",
+  "*.swp",
+  "*.jsonl",
   // "*.prompt", // can be incredibly confusing for the LLM to have another set of instructions injected into the prompt
 ];
 
@@ -82,6 +94,7 @@ export const DEFAULT_IGNORE_DIRS = [
   "node_modules/",
   "dist/",
   "build/",
+  "Build/",
   "target/",
   "out/",
   "bin/",
@@ -91,6 +104,7 @@ export const DEFAULT_IGNORE_DIRS = [
   "__pycache__/",
   "site-packages/",
   ".gradle/",
+  ".mvn/",
   ".cache/",
   "gems/",
   "vendor/",
@@ -100,3 +114,36 @@ export const defaultIgnoreDir = ignore().add(DEFAULT_IGNORE_DIRS);
 
 export const DEFAULT_IGNORE =
   DEFAULT_IGNORE_FILETYPES.join("\n") + "\n" + DEFAULT_IGNORE_DIRS.join("\n");
+
+export const defaultIgnoreFileAndDir = ignore()
+  .add(defaultIgnoreFile)
+  .add(defaultIgnoreDir);
+
+export function gitIgArrayFromFile(file: string) {
+  return file
+    .split(/\r?\n/) // Split on new line
+    .map((l) => l.trim()) // Remove whitespace
+    .filter((l) => !/^#|^$/.test(l)); // Remove empty lines
+}
+
+export const getGlobalContinueIgArray = () => {
+  const contents = fs.readFileSync(getGlobalContinueIgnorePath(), "utf8");
+  return gitIgArrayFromFile(contents);
+};
+
+export const getWorkspaceContinueIgArray = async (ide: IDE) => {
+  const dirs = await ide.getWorkspaceDirs();
+  return await dirs.reduce(
+    async (accPromise, dir) => {
+      const acc = await accPromise;
+      try {
+        const contents = await ide.readFile(`${dir}/.continueignore`);
+        return [...acc, ...gitIgArrayFromFile(contents)];
+      } catch (err) {
+        console.error(err);
+        return acc;
+      }
+    },
+    Promise.resolve([] as string[]),
+  );
+};
